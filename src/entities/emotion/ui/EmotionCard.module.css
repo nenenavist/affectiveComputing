@@ -1,0 +1,34 @@
+.card {
+  position: relative;
+  overflow: hidden;
+  min-height: 190px;
+  padding: 28px;
+}
+
+.halo {
+  position: absolute;
+  top: -50px;
+  right: -40px;
+  width: 160px;
+  height: 160px;
+  border-radius: 999px;
+  opacity: 0.24;
+}
+
+.content {
+  position: relative;
+  z-index: 1;
+}
+
+.badge {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 13px;
+  color: #ffffff;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 999px;
+}

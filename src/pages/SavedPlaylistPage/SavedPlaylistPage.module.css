@@ -1,0 +1,26 @@
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.embed {
+  width: 100%;
+  min-height: 352px;
+  background: rgba(255, 255, 255, 0.68);
+  border: 0;
+  border-radius: 18px;
+}
+
+@media (max-width: 920px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

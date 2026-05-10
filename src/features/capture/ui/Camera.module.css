@@ -1,0 +1,77 @@
+.cameraCard {
+  position: relative;
+  overflow: hidden;
+  min-height: 360px;
+  background: #15151d;
+  border-radius: 22px;
+  box-shadow: 0 24px 60px rgba(36, 34, 50, 0.2);
+}
+
+.preview,
+.captured {
+  width: 100%;
+  height: 360px;
+  object-fit: cover;
+}
+
+.placeholder {
+  display: grid;
+  min-height: 360px;
+  padding: 32px;
+  color: #ffffff;
+  text-align: center;
+  background:
+    linear-gradient(135deg, rgba(143, 123, 234, 0.58), rgba(255, 155, 179, 0.5)),
+    #242232;
+  place-items: center;
+}
+
+.controls {
+  position: absolute;
+  right: 0;
+  bottom: 20px;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.captureButton {
+  width: 72px;
+  height: 72px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.95);
+  border: 7px solid rgba(255, 255, 255, 0.38);
+  border-radius: 999px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.2);
+  pointer-events: auto;
+  transition:
+    transform 180ms ease,
+    opacity 180ms ease;
+}
+
+.captureButton:hover:not(:disabled) {
+  transform: scale(1.05);
+}
+
+.captureButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.countdown {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  color: #ffffff;
+  font-size: clamp(4rem, 18vw, 8rem);
+  font-weight: 900;
+  background: rgba(36, 34, 50, 0.45);
+  place-items: center;
+}
+
+.topActions {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+}

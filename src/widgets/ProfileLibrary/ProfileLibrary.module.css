@@ -1,0 +1,65 @@
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.playlistList {
+  display: grid;
+  gap: 12px;
+}
+
+.playlistItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 16px;
+  text-align: left;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 18px;
+  box-shadow: 0 14px 34px rgba(68, 52, 107, 0.08);
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    background-color 180ms ease;
+}
+
+.playlistItem:hover {
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 42px rgba(68, 52, 107, 0.13);
+  transform: translateY(-2px);
+}
+
+.playlistButton {
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.playlistName {
+  overflow: hidden;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playlistMeta {
+  margin-top: 5px;
+  color: #706b80;
+  font-size: 0.9rem;
+}
+
+@media (max-width: 920px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

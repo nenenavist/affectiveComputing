@@ -1,0 +1,17 @@
+.list {
+  display: grid;
+  gap: 12px;
+}
+
+.header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.count {
+  color: #706b80;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
