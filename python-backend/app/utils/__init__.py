@@ -1,5 +1,6 @@
 from typing import Dict, List
 
+from app.ml import detect_emotion
 from app.models import Emotion, MoodRequest, Playlist, Track
 
 
@@ -45,33 +46,12 @@ TRACKS_BY_EMOTION: Dict[Emotion, List[Dict[str, str]]] = {
 }
 
 
-EMOTION_KEYWORDS: Dict[Emotion, List[str]] = {
-    "happy": ["happy", "great", "good", "excited", "joy", "love", "amazing", "calm", "рад", "счаст", "хорош", "люблю", "восторг"],
-    "sad": ["sad", "tired", "lonely", "hurt", "cry", "bad", "down", "empty", "груст", "устал", "одинок", "плохо", "плак"],
-    "angry": ["angry", "mad", "furious", "stress", "annoyed", "hate", "rage", "зл", "бесит", "стресс", "ненавиж", "ярость"],
-    "neutral": ["okay", "fine", "normal", "neutral", "usual", "average", "норм", "обычно", "нейтраль", "ровно"],
-}
-
-
 PLAYLIST_NAMES: Dict[Emotion, str] = {
     "happy": "Пастельный утренний заряд",
     "sad": "Мягкий дождливый вечер",
     "angry": "Выпустить напряжение",
     "neutral": "Ровный дневной ритм",
 }
-
-
-def detect_emotion(request: MoodRequest) -> Emotion:
-    normalized_text = request.text.lower()
-
-    for emotion, keywords in EMOTION_KEYWORDS.items():
-        if any(keyword in normalized_text for keyword in keywords):
-            return emotion
-
-    if request.hasCameraCapture or request.image:
-        return "happy"
-
-    return "neutral"
 
 
 def build_playlist(request: MoodRequest) -> Playlist:
