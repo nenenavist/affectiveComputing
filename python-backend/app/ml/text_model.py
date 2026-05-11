@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from app.models import Emotion
+from app.schemas import Emotion
 
 
 TEXT_ARTIFACT_PATH = Path(__file__).resolve().parent / "artifacts" / "text_sentiment.joblib"

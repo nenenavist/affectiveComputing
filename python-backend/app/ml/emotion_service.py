@@ -1,6 +1,6 @@
 from app.ml.image_model import detect_image_emotion
 from app.ml.text_model import detect_text_emotion
-from app.models import Emotion, MoodRequest
+from app.schemas import Emotion, MoodRequest
 
 
 def detect_emotion(request: MoodRequest) -> Emotion:

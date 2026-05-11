@@ -1,7 +1,7 @@
 from typing import Dict, List
 
 from app.ml import detect_emotion
-from app.models import Emotion, MoodRequest, Playlist, Track
+from app.schemas import Emotion, MoodRequest, Playlist, Track
 
 
 COVERS = [

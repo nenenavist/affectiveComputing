@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -26,4 +26,4 @@ class Playlist(BaseModel):
     name: str
     emotion: Emotion
     spotifyUrl: str
-    tracks: list[Track]
+    tracks: List[Track]

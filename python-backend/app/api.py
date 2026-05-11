@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException
 
-from app.models import MoodRequest, Playlist
-from app.utils import build_playlist
+from app.playlist_service import build_playlist
+from app.schemas import MoodRequest, Playlist
+
 
 router = APIRouter(prefix="/api")
 

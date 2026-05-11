@@ -5,7 +5,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Dict, Optional
 
-from app.models import Emotion
+from app.schemas import Emotion
 
 
 ARTIFACT_PATH = Path(__file__).resolve().parent / "artifacts" / "emotion_cnn.pth"
