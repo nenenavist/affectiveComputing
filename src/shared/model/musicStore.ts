@@ -10,6 +10,7 @@ type MoodPreferences = {
 type MoodInput = {
   text: string;
   hasCameraCapture: boolean;
+  image?: string | null;
 };
 
 type MusicMoodState = {

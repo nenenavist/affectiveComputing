@@ -1,16 +1,26 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-def create_app():
-    app = FastAPI(__name__)
-    
-    # Load configuration from environment variables or config file
-    app.config.from_mapping(
-        SECRET_KEY='your_secret_key',
-        # Add other configuration variables here
+from app.routes import router as api_router
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="Music Mood Matcher API")
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
-    # Register blueprints for routes
-    from .routes import main as main_routes
-    app.register_blueprint(main_routes)
+    @app.get("/")
+    async def read_root():
+        return {"message": "Music Mood Matcher API is running"}
 
+    app.include_router(api_router)
     return app

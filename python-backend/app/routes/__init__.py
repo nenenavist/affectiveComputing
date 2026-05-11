@@ -1,9 +1,22 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
-router = APIRouter()
+from app.models import MoodRequest, Playlist
+from app.utils import build_playlist
 
-# Define your API routes here
-# Example:
-# @router.get("/example")
-# async def example_route():
-#     return {"message": "This is an example route."}
+router = APIRouter(prefix="/api")
+
+
+@router.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+
+@router.post("/mood/playlist", response_model=Playlist)
+async def generate_mood_playlist(request: MoodRequest):
+    if "api error" in request.text.lower():
+        raise HTTPException(
+            status_code=503,
+            detail="Анализ настроения временно недоступен. Попробуйте ещё раз.",
+        )
+
+    return build_playlist(request)

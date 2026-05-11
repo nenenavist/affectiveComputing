@@ -1,5 +1,10 @@
 node_modules
 dist
+.npm-cache
+__pycache__
+*.py[cod]
+python-backend/.venv
+python-backend/venv
 .DS_Store
 *.local
 npm-debug.log*

@@ -24,4 +24,5 @@ export type SavedPlaylist = Playlist & {
 export type MoodRequest = {
   text: string;
   hasCameraCapture: boolean;
+  image?: string | null;
 };

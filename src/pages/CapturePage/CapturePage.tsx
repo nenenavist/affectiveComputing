@@ -40,6 +40,7 @@ export const CapturePage = () => {
     setMoodInput({
       text: text.trim(),
       hasCameraCapture: Boolean(capturedImage),
+      image: capturedImage,
     });
     navigate('/loading');
   };
