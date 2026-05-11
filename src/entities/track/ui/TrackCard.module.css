@@ -59,6 +59,11 @@
   white-space: nowrap;
 }
 
+.musicMeta {
+  display: flex;
+  margin-top: 6px;
+}
+
 .actions {
   display: flex;
   gap: 4px;

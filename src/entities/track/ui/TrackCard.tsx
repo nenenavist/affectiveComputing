@@ -1,5 +1,5 @@
 import { DeleteOutlineRounded, FavoriteBorderRounded, FavoriteRounded, OpenInNewRounded } from '@mui/icons-material';
-import { IconButton, Tooltip } from '@mui/material';
+import { Chip, IconButton, Tooltip } from '@mui/material';
 import { Track } from '../../playlist/model/types';
 import styles from './TrackCard.module.css';
 
@@ -25,6 +25,14 @@ export const TrackCard = ({ track, liked, onToggleLike, onRemove }: TrackCardPro
           <span aria-hidden="true">•</span>
           <span>{track.duration}</span>
         </div>
+        {track.musicEmotion ? (
+          <div className={styles.musicMeta}>
+            <Chip
+              size="small"
+              label={`${track.musicEmotion} ${track.musicEmotionScore ? Math.round(track.musicEmotionScore * 100) : ''}%`}
+            />
+          </div>
+        ) : null}
       </button>
       <div className={styles.actions}>
         <Tooltip title={liked ? 'Убрать из любимых' : 'Добавить в любимые'}>

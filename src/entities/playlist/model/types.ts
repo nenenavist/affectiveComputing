@@ -7,6 +7,9 @@ export type Track = {
   duration: string;
   coverUrl: string;
   spotifyUrl: string;
+  musicEmotion?: Emotion;
+  musicEmotionScore?: number;
+  musicTags?: string[];
 };
 
 export type Playlist = {

@@ -1,7 +1,9 @@
 from typing import Dict, List
 
 from app.ml import detect_emotion
+from app.music import analyze_music_emotion
 from app.schemas import Emotion, MoodRequest, Playlist, Track
+from app.spotify_service import search_tracks
 
 
 COVERS = [
@@ -16,32 +18,32 @@ COVERS = [
 
 TRACKS_BY_EMOTION: Dict[Emotion, List[Dict[str, str]]] = {
     "happy": [
-        {"id": "happy-1", "title": "Солнечные шаги", "artist": "Luna Vale", "duration": "3:18"},
-        {"id": "happy-2", "title": "Персиковое небо", "artist": "North Arcade", "duration": "2:54"},
-        {"id": "happy-3", "title": "Утренний свет", "artist": "The Paper Planes", "duration": "3:41"},
-        {"id": "happy-4", "title": "Лёгкое сияние", "artist": "Mira Coast", "duration": "3:07"},
-        {"id": "happy-5", "title": "Цветная пятница", "artist": "Echo Honey", "duration": "2:48"},
+        {"id": "happy-1", "title": "Happy", "artist": "Pharrell Williams", "duration": "3:53"},
+        {"id": "happy-2", "title": "Walking on Sunshine", "artist": "Katrina and the Waves", "duration": "3:58"},
+        {"id": "happy-3", "title": "Can't Stop the Feeling!", "artist": "Justin Timberlake", "duration": "3:56"},
+        {"id": "happy-4", "title": "Good as Hell", "artist": "Lizzo", "duration": "2:39"},
+        {"id": "happy-5", "title": "September", "artist": "Earth, Wind & Fire", "duration": "3:35"},
     ],
     "sad": [
-        {"id": "sad-1", "title": "Дождь по стеклу", "artist": "Elliot Lane", "duration": "3:56"},
-        {"id": "sad-2", "title": "Тихая гавань", "artist": "June Atlas", "duration": "4:12"},
-        {"id": "sad-3", "title": "Письма из синей комнаты", "artist": "Orchid Field", "duration": "3:33"},
-        {"id": "sad-4", "title": "Последний поезд домой", "artist": "Soft Mercury", "duration": "4:04"},
-        {"id": "sad-5", "title": "Отлив", "artist": "Anya Reed", "duration": "3:47"},
+        {"id": "sad-1", "title": "Someone Like You", "artist": "Adele", "duration": "4:45"},
+        {"id": "sad-2", "title": "The Night We Met", "artist": "Lord Huron", "duration": "3:28"},
+        {"id": "sad-3", "title": "Skinny Love", "artist": "Bon Iver", "duration": "3:58"},
+        {"id": "sad-4", "title": "Fix You", "artist": "Coldplay", "duration": "4:55"},
+        {"id": "sad-5", "title": "Hurt", "artist": "Johnny Cash", "duration": "3:38"},
     ],
     "angry": [
-        {"id": "angry-1", "title": "Пульс на пределе", "artist": "Metro Static", "duration": "2:59"},
-        {"id": "angry-2", "title": "Бетонное сердце", "artist": "Violet Fuse", "duration": "3:28"},
-        {"id": "angry-3", "title": "Нет сигнала", "artist": "Rook District", "duration": "3:36"},
-        {"id": "angry-4", "title": "После вспышки", "artist": "Glass Sirens", "duration": "3:11"},
-        {"id": "angry-5", "title": "Острые края", "artist": "Nova Riot", "duration": "2:51"},
+        {"id": "angry-1", "title": "Break Stuff", "artist": "Limp Bizkit", "duration": "2:46"},
+        {"id": "angry-2", "title": "Killing in the Name", "artist": "Rage Against The Machine", "duration": "5:14"},
+        {"id": "angry-3", "title": "Bodies", "artist": "Drowning Pool", "duration": "3:22"},
+        {"id": "angry-4", "title": "Duality", "artist": "Slipknot", "duration": "4:12"},
+        {"id": "angry-5", "title": "Given Up", "artist": "Linkin Park", "duration": "3:09"},
     ],
     "neutral": [
-        {"id": "neutral-1", "title": "Чистый лист", "artist": "Aster Mode", "duration": "3:24"},
-        {"id": "neutral-2", "title": "Мягкий фокус", "artist": "Calm Index", "duration": "3:32"},
-        {"id": "neutral-3", "title": "Место у окна", "artist": "Haven North", "duration": "3:46"},
-        {"id": "neutral-4", "title": "Ровный свет", "artist": "Nora Finch", "duration": "3:05"},
-        {"id": "neutral-5", "title": "Маленькие ритуалы", "artist": "The Local Forecast", "duration": "2:58"},
+        {"id": "neutral-1", "title": "Weightless", "artist": "Marconi Union", "duration": "8:08"},
+        {"id": "neutral-2", "title": "Avril 14th", "artist": "Aphex Twin", "duration": "2:05"},
+        {"id": "neutral-3", "title": "Gymnopédie No. 1", "artist": "Erik Satie", "duration": "3:05"},
+        {"id": "neutral-4", "title": "An Ending (Ascent)", "artist": "Brian Eno", "duration": "4:24"},
+        {"id": "neutral-5", "title": "Blue in Green", "artist": "Miles Davis", "duration": "5:37"},
     ],
 }
 
@@ -54,17 +56,42 @@ PLAYLIST_NAMES: Dict[Emotion, str] = {
 }
 
 
+MUSIC_TAGS_BY_EMOTION: Dict[Emotion, List[str]] = {
+    "happy": ["happy", "pop", "dance", "summer", "fun"],
+    "sad": ["sad", "melancholic", "rain", "acoustic", "chill"],
+    "angry": ["angry", "rage", "metal", "hard rock", "punk"],
+    "neutral": ["neutral", "ambient", "calm", "instrumental", "jazz"],
+}
+
+
 def build_playlist(request: MoodRequest) -> Playlist:
     emotion = detect_emotion(request)
     playlist_id = f"mmm-{emotion}-playlist"
-    tracks = [
-        Track(
-            **track,
-            coverUrl=COVERS[index % len(COVERS)],
-            spotifyUrl=f"https://open.spotify.com/track/{track['id']}",
+    tracks = []
+
+    resolved_tracks = search_tracks(TRACKS_BY_EMOTION[emotion])
+
+    for index, track in enumerate(resolved_tracks):
+        cover_url = track.get("coverUrl") or COVERS[index % len(COVERS)]
+        spotify_url = track.get("spotifyUrl") or _spotify_search_url(track["title"], track["artist"])
+        music_emotion = analyze_music_emotion(
+            title=track["title"],
+            artist=track["artist"],
+            tags=MUSIC_TAGS_BY_EMOTION[emotion],
         )
-        for index, track in enumerate(TRACKS_BY_EMOTION[emotion])
-    ]
+        tracks.append(
+            Track(
+                id=track["id"],
+                title=track["title"],
+                artist=track["artist"],
+                duration=track["duration"],
+                coverUrl=cover_url,
+                spotifyUrl=spotify_url,
+                musicEmotion=music_emotion.emotion,
+                musicEmotionScore=music_emotion.score,
+                musicTags=music_emotion.tags,
+            )
+        )
 
     return Playlist(
         id=playlist_id,
@@ -73,3 +100,8 @@ def build_playlist(request: MoodRequest) -> Playlist:
         spotifyUrl=f"https://open.spotify.com/playlist/{playlist_id}",
         tracks=tracks,
     )
+
+
+def _spotify_search_url(title: str, artist: str) -> str:
+    query = f"{artist} {title}".replace(" ", "%20")
+    return f"https://open.spotify.com/search/{query}"

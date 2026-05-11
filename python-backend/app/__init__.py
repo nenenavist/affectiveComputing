@@ -2,9 +2,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as api_router
+from app.db import init_db
 
 
 def create_app() -> FastAPI:
+    init_db()
+
     app = FastAPI(title="Music Mood Matcher API")
 
     app.add_middleware(

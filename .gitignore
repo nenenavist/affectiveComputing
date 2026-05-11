@@ -5,6 +5,7 @@ __pycache__
 *.py[cod]
 python-backend/.venv
 python-backend/venv
+python-backend/*.db
 .DS_Store
 *.local
 npm-debug.log*

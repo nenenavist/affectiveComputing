@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { Playlist, SavedPlaylist, Track } from '../../entities/playlist/model/types';
+import { requestAuth, syncProfile, User } from '../api/backend';
 
 type MoodPreferences = {
   cameraEnabled: boolean;
@@ -14,11 +15,17 @@ type MoodInput = {
 };
 
 type MusicMoodState = {
+  authToken: string | null;
+  user: User | null;
   preferences: MoodPreferences;
   moodInput: MoodInput;
   currentPlaylist: Playlist | null;
   savedPlaylists: SavedPlaylist[];
   likedTracks: Track[];
+  login: (email: string, password: string) => Promise<void>;
+  register: (email: string, password: string) => Promise<void>;
+  logout: () => void;
+  syncProfileToBackend: () => Promise<void>;
   setPreferences: (preferences: MoodPreferences) => void;
   setMoodInput: (input: MoodInput) => void;
   setCurrentPlaylist: (playlist: Playlist) => void;
@@ -39,6 +46,8 @@ const defaultPreferences: MoodPreferences = {
 export const useMusicMoodStore = create<MusicMoodState>()(
   persist(
     (set, get) => ({
+      authToken: null,
+      user: null,
       preferences: defaultPreferences,
       moodInput: {
         text: '',
@@ -47,6 +56,38 @@ export const useMusicMoodStore = create<MusicMoodState>()(
       currentPlaylist: null,
       savedPlaylists: [],
       likedTracks: [],
+      login: async (email, password) => {
+        const response = await requestAuth('login', email, password);
+        set({
+          authToken: response.token,
+          user: response.user,
+          savedPlaylists: response.profile.savedPlaylists,
+          likedTracks: response.profile.likedTracks,
+        });
+      },
+      register: async (email, password) => {
+        const response = await requestAuth('register', email, password);
+        set({
+          authToken: response.token,
+          user: response.user,
+          savedPlaylists: response.profile.savedPlaylists,
+          likedTracks: response.profile.likedTracks,
+        });
+      },
+      logout: () => set({ authToken: null, user: null }),
+      syncProfileToBackend: async () => {
+        const { authToken, savedPlaylists, likedTracks } = get();
+
+        if (!authToken) {
+          return;
+        }
+
+        const profile = await syncProfile(authToken, { savedPlaylists, likedTracks });
+        set({
+          savedPlaylists: profile.savedPlaylists,
+          likedTracks: profile.likedTracks,
+        });
+      },
       setPreferences: (preferences) => set({ preferences }),
       setMoodInput: (input) => set({ moodInput: input }),
       setCurrentPlaylist: (playlist) => set({ currentPlaylist: playlist }),
@@ -120,6 +161,8 @@ export const useMusicMoodStore = create<MusicMoodState>()(
       name: 'music-mood-matcher',
       partialize: (state) => ({
         preferences: state.preferences,
+        authToken: state.authToken,
+        user: state.user,
         savedPlaylists: state.savedPlaylists,
         likedTracks: state.likedTracks,
       }),
