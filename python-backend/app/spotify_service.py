@@ -20,6 +20,9 @@ TOKEN_RETRY_ATTEMPTS = 3
 SEARCH_RETRY_ATTEMPTS = 3
 NETWORK_TIMEOUT_STATUS = 504
 _TOKEN_CACHE: Dict[str, object] = {"access_token": None, "expires_at": 0.0}
+# Set to False after the first 404/403 from /recommendations so we don't
+# keep wasting requests on a deprecated endpoint.
+_RECOMMENDATIONS_AVAILABLE = True
 _logger = logging.getLogger(__name__)
 
 
@@ -152,6 +155,140 @@ def search_tracks_for_mood(queries: List[str], limit: int = 30) -> List[Dict[str
     return combined
 
 
+def get_recommendations(
+    seed_genres: List[str],
+    audio_targets: Dict[str, float],
+    limit: int = 30,
+    market: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """Spotify /v1/recommendations — selects tracks by AUDIO features, not titles.
+
+    Accepts:
+        seed_genres   — up to 5 seed genres (e.g. ["pop", "dance", "indie"]).
+        audio_targets — any of: valence, energy, tempo, danceability,
+                        acousticness, instrumentalness, speechiness, etc.
+        limit         — number of tracks to fetch (max 100).
+
+    Returns a list of formatted tracks.  Raises SpotifyApiError on failure.
+    """
+    global _RECOMMENDATIONS_AVAILABLE
+    if not _RECOMMENDATIONS_AVAILABLE:
+        raise SpotifyApiError(404, "Spotify /recommendations is deprecated for this app.")
+
+    token = get_app_access_token()
+    if not token:
+        raise SpotifyApiError(401, "Spotify access token is unavailable.")
+
+    safe_seed_genres = [g.strip().lower() for g in seed_genres if g and g.strip()][:5]
+    if not safe_seed_genres:
+        safe_seed_genres = ["pop"]
+
+    params: Dict[str, str] = {
+        "seed_genres": ",".join(safe_seed_genres),
+        "limit": str(max(1, min(int(limit), 100))),
+        "market": market or MARKET,
+    }
+    for key, value in audio_targets.items():
+        if value is None:
+            continue
+        params[f"target_{key}"] = f"{float(value):.3f}"
+
+    request = Request(
+        f"{SPOTIFY_API_URL}/recommendations?{urlencode(params)}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    last_exception: Optional[BaseException] = None
+    for attempt in range(SEARCH_RETRY_ATTEMPTS):
+        try:
+            with urlopen(request, timeout=SEARCH_REQUEST_TIMEOUT) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            items = payload.get("tracks", []) or []
+            formatted = _format_unique_tracks(items, require_preview=True)
+            if len(formatted) < limit // 2:
+                formatted += [
+                    t for t in _format_unique_tracks(items, require_preview=False)
+                    if t["id"] not in {x["id"] for x in formatted}
+                ]
+            return formatted[:limit]
+        except HTTPError as error:
+            if error.code in (403, 404):
+                # Endpoint is deprecated for this app — don't try again this session.
+                _RECOMMENDATIONS_AVAILABLE = False
+                _logger.info(
+                    "Disabling Spotify /recommendations for this session (HTTP %s).",
+                    error.code,
+                )
+            message = _extract_api_message(error)
+            raise SpotifyApiError(error.code, message) from error
+        except Exception as error:
+            last_exception = error
+            _logger.warning(
+                "Spotify recommendations failed (attempt %s/%s): %s",
+                attempt + 1, SEARCH_RETRY_ATTEMPTS, error,
+            )
+            if attempt < SEARCH_RETRY_ATTEMPTS - 1:
+                time.sleep(0.5 * (attempt + 1))
+
+    if last_exception is not None and _is_network_timeout(last_exception):
+        raise SpotifyApiError(
+            NETWORK_TIMEOUT_STATUS, f"Таймаут recommendations: {last_exception}"
+        )
+    raise SpotifyApiError(503, f"Spotify recommendations failed: {last_exception}")
+
+
+_AUDIO_FEATURES_AVAILABLE = True
+
+
+def get_audio_features(track_ids: List[str]) -> Dict[str, Dict[str, float]]:
+    """Fetch audio features for up to 100 tracks per call.  Returns {id: features}."""
+    global _AUDIO_FEATURES_AVAILABLE
+    if not track_ids or not _AUDIO_FEATURES_AVAILABLE:
+        return {}
+
+    token = get_app_access_token()
+    if not token:
+        return {}
+
+    results: Dict[str, Dict[str, float]] = {}
+    for batch_start in range(0, len(track_ids), 100):
+        batch = track_ids[batch_start:batch_start + 100]
+        params = {"ids": ",".join(batch)}
+        request = Request(
+            f"{SPOTIFY_API_URL}/audio-features?{urlencode(params)}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            with urlopen(request, timeout=SEARCH_REQUEST_TIMEOUT) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            for feature in payload.get("audio_features", []) or []:
+                if not isinstance(feature, dict) or not feature.get("id"):
+                    continue
+                results[str(feature["id"])] = {
+                    "valence": float(feature.get("valence") or 0.0),
+                    "energy": float(feature.get("energy") or 0.0),
+                    "tempo": float(feature.get("tempo") or 0.0),
+                    "danceability": float(feature.get("danceability") or 0.0),
+                    "acousticness": float(feature.get("acousticness") or 0.0),
+                    "instrumentalness": float(feature.get("instrumentalness") or 0.0),
+                }
+        except HTTPError as error:
+            if error.code in (403, 404):
+                _AUDIO_FEATURES_AVAILABLE = False
+                _logger.info(
+                    "Disabling Spotify /audio-features for this session (HTTP %s).",
+                    error.code,
+                )
+                return results
+            _logger.warning("Audio-features batch failed: %s", error)
+            continue
+        except Exception as error:
+            _logger.warning("Audio-features batch failed: %s", error)
+            continue
+
+    return results
+
+
 def search_track_metadata(title: str, artist: str) -> Optional[Dict[str, str]]:
     """Look up a single track by title/artist, used as metadata enrichment helper."""
 
@@ -174,21 +311,21 @@ def search_track_metadata(title: str, artist: str) -> Optional[Dict[str, str]]:
     return None
 
 
-def _search_query(query: str, limit: int = 50, offset: Optional[int] = None) -> List[Dict[str, object]]:
+def _search_query(query: str, limit: int = 20, offset: Optional[int] = None) -> List[Dict[str, object]]:
     """Call Spotify /search; raise SpotifyApiError when API is unavailable."""
 
     token = get_app_access_token()
     if not token:
         raise SpotifyApiError(401, "Spotify access token is unavailable.")
 
-    safe_limit = max(1, min(int(limit), 50))
+    # Spotify recently tightened /search to limit ≤ 20 for new applications.
+    safe_limit = max(1, min(int(limit), 20))
     safe_offset = max(0, min(int(offset or 0), 950))
     params = {
         "q": query,
         "type": "track",
         "market": MARKET,
         "limit": str(safe_limit),
-        "include_external": "audio",
         "offset": str(safe_offset),
     }
 

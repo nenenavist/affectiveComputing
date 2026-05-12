@@ -5,3 +5,6 @@ pillow
 torch
 scikit-learn
 opencv-python-headless
+sentence-transformers
+joblib
+datasets

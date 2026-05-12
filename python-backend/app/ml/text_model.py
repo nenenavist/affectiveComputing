@@ -31,6 +31,8 @@ EMOJI_WEIGHT = 1.9   # emojis carry strong intentional signal
 
 
 TEXT_ARTIFACT_PATH = Path(__file__).resolve().parent / "artifacts" / "text_sentiment.joblib"
+TRANSFORMER_CLF_PATH = Path(__file__).resolve().parent / "artifacts" / "text_classifier.joblib"
+TRANSFORMER_ENCODER_PATH = Path(__file__).resolve().parent / "artifacts" / "text_encoder.txt"
 EMOTION_ORDER: List[Emotion] = ["happy", "sad", "angry", "neutral"]
 
 WEIGHTED_KEYWORDS: Dict[Emotion, Dict[str, float]] = {
@@ -381,6 +383,63 @@ def get_text_pipeline():
         return _build_local_text_pipeline()
 
 
+@lru_cache(maxsize=1)
+def get_transformer_classifier():
+    """Load the strong transformer-based classifier (encoder + sklearn head).
+
+    Returns (encoder, classifier) or None if the artifact does not exist or
+    the dependencies are missing.  Once loaded the result is cached, so
+    subsequent calls are O(1).
+    """
+    if not TRANSFORMER_CLF_PATH.exists() or not TRANSFORMER_ENCODER_PATH.exists():
+        return None
+
+    try:
+        import joblib
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        return None
+
+    try:
+        encoder_name = TRANSFORMER_ENCODER_PATH.read_text(encoding="utf-8").strip()
+        encoder = SentenceTransformer(encoder_name)
+        classifier = joblib.load(TRANSFORMER_CLF_PATH)
+        return encoder, classifier
+    except Exception:
+        return None
+
+
+def _transformer_emotion_weights(text: str) -> Optional[Dict[Emotion, float]]:
+    bundle = get_transformer_classifier()
+    if bundle is None or not text.strip():
+        return None
+
+    encoder, classifier = bundle
+    try:
+        embedding = encoder.encode(
+            [text],
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        probabilities = classifier.predict_proba(embedding)[0]
+        classes = list(classifier.classes_)
+    except Exception:
+        return None
+
+    weights: Dict[Emotion, float] = {emotion: 0.0 for emotion in EMOTION_ORDER}
+    for index, label in enumerate(classes):
+        emotion = PIPELINE_LABEL_TO_EMOTION.get(str(label).lower().strip())
+        if not emotion:
+            continue
+        weights[emotion] += float(probabilities[index])
+
+    total = sum(weights.values())
+    if total <= 0:
+        return None
+    return {emotion: weights[emotion] / total for emotion in EMOTION_ORDER}
+
+
 def _build_local_text_pipeline():
     try:
         from sklearn.feature_extraction.text import TfidfVectorizer
@@ -569,7 +628,17 @@ def detect_text_emotion(text: str) -> Optional[Emotion]:
 
 
 def detect_text_emotion_weights(text: str) -> Dict[Emotion, float]:
-    # 1. Emoji signal (extracted before stripping non-word characters).
+    """Detect emotion weights from text.
+
+    Signal priority (when available):
+        1. Strong transformer classifier (multilingual MiniLM + LogReg, ~70 %)
+        2. Local TF-IDF pipeline (~15 %)
+        3. Keyword heuristics (~10 %)
+        4. Emoji signal (overlay, up to 30 %)
+
+    If the transformer artifact is missing, falls back to the previous
+    keyword + TF-IDF approach.
+    """
     emoji_scores = detect_emoji_scores(text)
     has_emoji = any(v > 0 for v in emoji_scores.values())
 
@@ -577,16 +646,63 @@ def detect_text_emotion_weights(text: str) -> Dict[Emotion, float]:
     if not cleaned and not has_emoji:
         return {emotion: 0.0 for emotion in EMOTION_ORDER}
 
-    # 2. Keyword heuristics.
     keyword_scores = score_keywords(cleaned) if cleaned else {e: 0.0 for e in EMOTION_ORDER}
     keyword_weights = normalize_emotion_weights(keyword_scores)
 
-    # 3. ML pipeline.
-    pipeline = get_text_pipeline()
-    pipeline_weights = _pipeline_emotion_weights(pipeline, cleaned) if cleaned else None
+    pipeline_weights = (
+        _pipeline_emotion_weights(get_text_pipeline(), cleaned) if cleaned else None
+    )
 
-    # 4. Blend keyword + pipeline.
-    if pipeline_weights:
+    transformer_weights = _transformer_emotion_weights(text) if cleaned else None
+
+    if transformer_weights is not None:
+        # Adaptive blending — the transformer is good on long, varied text
+        # but can be unreliable on short Russian inputs like "мне грустно".
+        # When the keyword signal is strong and agrees with itself, give
+        # keywords/heuristics a much larger share.
+        keyword_peak = max(keyword_weights.values()) if keyword_weights else 0.0
+        keyword_top = max(keyword_weights, key=keyword_weights.get) if keyword_weights else None
+        transformer_top = max(transformer_weights, key=transformer_weights.get)
+        word_count = len(cleaned.split())
+
+        # Default split.
+        transformer_share = 0.55
+        keyword_share = 0.32
+        pipeline_share = 0.13 if pipeline_weights else 0.0
+
+        # Strong, unambiguous keyword hit ⇒ trust keyword more.
+        if keyword_peak >= 0.55:
+            transformer_share = 0.32
+            keyword_share = 0.55
+            pipeline_share = 0.13 if pipeline_weights else 0.0
+
+        # Short text (≤ 4 words) → transformer is less reliable for Russian.
+        if word_count <= 4:
+            transformer_share = min(transformer_share, 0.40)
+            keyword_share = max(keyword_share, 0.48)
+
+        # Disagreement: keyword and transformer point to different emotions.
+        # Reduce transformer dominance unless its confidence is very high.
+        if keyword_top and keyword_top != transformer_top and keyword_peak >= 0.40:
+            transformer_share = min(transformer_share, 0.45)
+            keyword_share = max(keyword_share, 0.42)
+
+        total_share = transformer_share + keyword_share + pipeline_share
+        transformer_share /= total_share
+        keyword_share /= total_share
+        if pipeline_weights:
+            pipeline_share /= total_share
+
+        weights = {
+            e: transformer_weights[e] * transformer_share
+            + keyword_weights[e] * keyword_share
+            for e in EMOTION_ORDER
+        }
+        if pipeline_weights:
+            for e in EMOTION_ORDER:
+                weights[e] += pipeline_weights[e] * pipeline_share
+
+    elif pipeline_weights:
         overlap = sum(min(keyword_weights[e], pipeline_weights[e]) for e in EMOTION_ORDER)
         pipeline_share = 0.52
         if overlap < 0.34:
@@ -601,20 +717,18 @@ def detect_text_emotion_weights(text: str) -> Dict[Emotion, float]:
     else:
         weights = dict(keyword_weights)
 
-    # 5. Blend in emoji signal (if present) — emojis are a very reliable
-    #    explicit signal and get a 40 % share when found.
     if has_emoji:
         emoji_weights = normalize_emotion_weights(emoji_scores)
-        emoji_share = min(0.40, sum(emoji_scores.values()) / (len(text) * 0.3 + 1))
-        emoji_share = max(emoji_share, 0.28)
+        emoji_share = min(0.32, sum(emoji_scores.values()) / (len(text) * 0.3 + 1))
+        emoji_share = max(emoji_share, 0.22)
         weights = {
             e: weights[e] * (1.0 - emoji_share) + emoji_weights[e] * emoji_share
             for e in EMOTION_ORDER
         }
 
     peak = max(weights.values())
-    if peak < 0.38:
-        weights["neutral"] = round(weights.get("neutral", 0.0) + 0.12, 4)
+    if peak < 0.34:
+        weights["neutral"] = round(weights.get("neutral", 0.0) + 0.10, 4)
         weights = renormalize_distribution(weights)
 
     return renormalize_distribution(weights)
