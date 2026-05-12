@@ -2,6 +2,7 @@ from typing import Dict, List
 
 from app.ml import detect_emotion
 from app.music import analyze_music_emotion
+from app.music.track_provider import emotion_seed_tags, fetch_track_candidates
 from app.schemas import Emotion, MoodRequest, Playlist, Track
 from app.spotify_service import search_tracks
 
@@ -56,42 +57,10 @@ PLAYLIST_NAMES: Dict[Emotion, str] = {
 }
 
 
-MUSIC_TAGS_BY_EMOTION: Dict[Emotion, List[str]] = {
-    "happy": ["happy", "pop", "dance", "summer", "fun"],
-    "sad": ["sad", "melancholic", "rain", "acoustic", "chill"],
-    "angry": ["angry", "rage", "metal", "hard rock", "punk"],
-    "neutral": ["neutral", "ambient", "calm", "instrumental", "jazz"],
-}
-
-
 def build_playlist(request: MoodRequest) -> Playlist:
     emotion = detect_emotion(request)
     playlist_id = f"mmm-{emotion}-playlist"
-    tracks = []
-
-    resolved_tracks = search_tracks(TRACKS_BY_EMOTION[emotion])
-
-    for index, track in enumerate(resolved_tracks):
-        cover_url = track.get("coverUrl") or COVERS[index % len(COVERS)]
-        spotify_url = track.get("spotifyUrl") or _spotify_search_url(track["title"], track["artist"])
-        music_emotion = analyze_music_emotion(
-            title=track["title"],
-            artist=track["artist"],
-            tags=MUSIC_TAGS_BY_EMOTION[emotion],
-        )
-        tracks.append(
-            Track(
-                id=track["id"],
-                title=track["title"],
-                artist=track["artist"],
-                duration=track["duration"],
-                coverUrl=cover_url,
-                spotifyUrl=spotify_url,
-                musicEmotion=music_emotion.emotion,
-                musicEmotionScore=music_emotion.score,
-                musicTags=music_emotion.tags,
-            )
-        )
+    tracks = _select_tracks_for_emotion(emotion)
 
     return Playlist(
         id=playlist_id,
@@ -100,6 +69,50 @@ def build_playlist(request: MoodRequest) -> Playlist:
         spotifyUrl=f"https://open.spotify.com/playlist/{playlist_id}",
         tracks=tracks,
     )
+
+
+def _select_tracks_for_emotion(emotion: Emotion) -> List[Track]:
+    candidates = fetch_track_candidates(emotion)
+    source_tracks = candidates if candidates else TRACKS_BY_EMOTION[emotion]
+    resolved_tracks = search_tracks(source_tracks)
+    scored_tracks = []
+
+    for index, track in enumerate(resolved_tracks):
+        cover_url = track.get("coverUrl") or COVERS[index % len(COVERS)]
+        spotify_url = track.get("spotifyUrl") or _spotify_search_url(track["title"], track["artist"])
+        tags = _candidate_tags(emotion, track)
+        music_emotion = analyze_music_emotion(
+            title=track["title"],
+            artist=track["artist"],
+            tags=tags,
+        )
+        scored_tracks.append(
+            (
+                music_emotion.emotion == emotion,
+                music_emotion.score,
+                Track(
+                    id=track["id"],
+                    title=track["title"],
+                    artist=track["artist"],
+                    duration=track["duration"],
+                    coverUrl=cover_url,
+                    spotifyUrl=spotify_url,
+                    source=track.get("source") or "fallback",
+                    musicEmotion=music_emotion.emotion,
+                    musicEmotionScore=music_emotion.score,
+                    musicTags=music_emotion.tags,
+                ),
+            )
+        )
+
+    scored_tracks.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [track for _, _, track in scored_tracks[:5]]
+
+
+def _candidate_tags(emotion: Emotion, track: Dict[str, str]) -> List[str]:
+    tags = emotion_seed_tags(emotion)
+    genre = track.get("genre")
+    return [*tags, genre] if genre else tags
 
 
 def _spotify_search_url(title: str, artist: str) -> str:

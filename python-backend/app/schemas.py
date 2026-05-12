@@ -19,6 +19,7 @@ class Track(BaseModel):
     duration: str
     coverUrl: str
     spotifyUrl: str
+    source: Optional[str] = None
     musicEmotion: Optional[Emotion] = None
     musicEmotionScore: Optional[float] = None
     musicTags: List[str] = Field(default_factory=list)
