@@ -1,4 +1,4 @@
-import { OpenInNewRounded, ReplayRounded } from '@mui/icons-material';
+import { ReplayRounded } from '@mui/icons-material';
 import { Card, CardContent, Snackbar, Stack, Typography } from '@mui/material';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -62,20 +62,20 @@ export const ResultPage = () => {
         </div>
         <div className={styles.grid}>
           <Stack spacing={3}>
-            <EmotionCard emotion={playlist.emotion} />
+            <EmotionCard emotion={playlist.emotion} emotionWeights={playlist.emotionWeights} />
             <Card>
               <CardContent>
                 <Stack spacing={2.5}>
                   <Typography variant="h5" sx={{ fontWeight: 850 }}>
-                    Предпросмотр Spotify
+                    Плеер внутри сайта
                   </Typography>
-                  <iframe
-                    className={styles.embed}
-                    title={`${playlist.name} Spotify embed`}
-                    src={`https://open.spotify.com/embed/playlist/${playlist.id}`}
-                    allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-                    loading="lazy"
-                  />
+                  <Typography color="text.secondary">
+                    Нажмите play у любого трека: если у трека есть preview, включится 30-секундный фрагмент; если preview нет, откроется YouTube fallback.
+                  </Typography>
+                  <div className={styles.summary}>
+                    <strong>{playlist.tracks.length}</strong>
+                    <span>треков в подборке</span>
+                  </div>
                 </Stack>
               </CardContent>
             </Card>
@@ -85,13 +85,6 @@ export const ResultPage = () => {
               <Stack spacing={3}>
                 <div className={styles.actions}>
                   <SavePlaylistButton disabled={isSaved} onSave={handleSave} />
-                  <AppButton
-                    variant="outlined"
-                    startIcon={<OpenInNewRounded />}
-                    onClick={() => window.open(playlist.spotifyUrl, '_blank', 'noopener,noreferrer')}
-                  >
-                    Открыть в Spotify
-                  </AppButton>
                   <AppButton variant="text" startIcon={<ReplayRounded />} onClick={() => navigate('/permissions')}>
                     Подобрать заново
                   </AppButton>

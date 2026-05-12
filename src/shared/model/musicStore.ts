@@ -163,6 +163,7 @@ export const useMusicMoodStore = create<MusicMoodState>()(
         preferences: state.preferences,
         authToken: state.authToken,
         user: state.user,
+        currentPlaylist: state.currentPlaylist,
         savedPlaylists: state.savedPlaylists,
         likedTracks: state.likedTracks,
       }),

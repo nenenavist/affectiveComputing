@@ -3,3 +3,5 @@ uvicorn
 numpy
 pillow
 torch
+scikit-learn
+opencv-python-headless

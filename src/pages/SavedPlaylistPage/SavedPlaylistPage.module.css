@@ -11,12 +11,24 @@
   gap: 12px;
 }
 
-.embed {
-  width: 100%;
-  min-height: 352px;
-  background: rgba(255, 255, 255, 0.68);
-  border: 0;
+.summary {
+  display: grid;
+  gap: 4px;
+  padding: 18px;
+  background: rgba(143, 123, 234, 0.12);
+  border: 1px solid rgba(143, 123, 234, 0.18);
   border-radius: 18px;
+}
+
+.summary strong {
+  color: #5d4dd3;
+  font-size: 2.4rem;
+  line-height: 1;
+}
+
+.summary span {
+  color: #706b80;
+  font-weight: 700;
 }
 
 @media (max-width: 920px) {

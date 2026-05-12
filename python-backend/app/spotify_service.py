@@ -1,14 +1,35 @@
 import base64
 import json
+import logging
 import os
-from functools import lru_cache
+import socket
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_URL = "https://api.spotify.com/v1"
+MARKET = "US"
+TOKEN_REQUEST_TIMEOUT = 20
+SEARCH_REQUEST_TIMEOUT = 18
+TOKEN_RETRY_ATTEMPTS = 3
+SEARCH_RETRY_ATTEMPTS = 3
+NETWORK_TIMEOUT_STATUS = 504
+_TOKEN_CACHE: Dict[str, object] = {"access_token": None, "expires_at": 0.0}
+_logger = logging.getLogger(__name__)
+
+
+class SpotifyApiError(RuntimeError):
+    """Raised when Spotify Web API responds with a meaningful error."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(f"Spotify API {status_code}: {message}")
+        self.status_code = status_code
+        self.message = message
 
 
 def _credentials() -> tuple[Optional[str], Optional[str]]:
@@ -20,54 +41,21 @@ def is_spotify_configured() -> bool:
     return bool(client_id and client_secret)
 
 
-def build_authorize_url(redirect_uri: str, state: str = "music-mood") -> Optional[str]:
-    client_id, _ = _credentials()
-    if not client_id:
-        return None
-
-    query = urlencode(
-        {
-            "client_id": client_id,
-            "response_type": "code",
-            "redirect_uri": redirect_uri,
-            "scope": "playlist-modify-private playlist-modify-public",
-            "state": state,
-        }
-    )
-    return f"https://accounts.spotify.com/authorize?{query}"
+def _is_network_timeout(error: BaseException) -> bool:
+    """Detect transient network timeouts that justify a retry/fallback."""
+    if isinstance(error, (socket.timeout, TimeoutError)):
+        return True
+    if isinstance(error, URLError) and isinstance(error.reason, (socket.timeout, TimeoutError)):
+        return True
+    return False
 
 
-def exchange_code(code: str, redirect_uri: str) -> Optional[Dict[str, object]]:
-    client_id, client_secret = _credentials()
-    if not client_id or not client_secret:
-        return None
-
-    credentials = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
-    request = Request(
-        SPOTIFY_TOKEN_URL,
-        data=urlencode(
-            {
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-            }
-        ).encode("utf-8"),
-        headers={
-            "Authorization": f"Basic {credentials}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        method="POST",
-    )
-
-    try:
-        with urlopen(request, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except Exception:
-        return None
-
-
-@lru_cache(maxsize=1)
 def get_app_access_token() -> Optional[str]:
+    cached_token = _TOKEN_CACHE.get("access_token")
+    expires_at = float(_TOKEN_CACHE.get("expires_at") or 0)
+    if cached_token and time.time() < expires_at:
+        return str(cached_token)
+
     client_id, client_secret = _credentials()
     if not client_id or not client_secret:
         return None
@@ -83,106 +71,197 @@ def get_app_access_token() -> Optional[str]:
         method="POST",
     )
 
-    try:
-        with urlopen(request, timeout=5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            return payload.get("access_token")
-    except Exception:
-        return None
+    payload: Optional[Dict[str, object]] = None
+    last_error: Optional[BaseException] = None
+
+    for attempt in range(TOKEN_RETRY_ATTEMPTS):
+        try:
+            with urlopen(request, timeout=TOKEN_REQUEST_TIMEOUT) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as error:
+            _logger.warning("Spotify token rejected (HTTP %s): %s", error.code, error.reason)
+            raise SpotifyApiError(error.code, str(error.reason)) from error
+        except Exception as error:
+            last_error = error
+            _logger.warning(
+                "Spotify token request failed (attempt %s/%s): %s",
+                attempt + 1,
+                TOKEN_RETRY_ATTEMPTS,
+                error,
+            )
+            if attempt < TOKEN_RETRY_ATTEMPTS - 1:
+                time.sleep(0.6 * (attempt + 1))
+
+    if payload is None:
+        if last_error is not None and _is_network_timeout(last_error):
+            raise SpotifyApiError(
+                NETWORK_TIMEOUT_STATUS,
+                "Сервер Spotify не отвечает (таймаут сети при получении токена).",
+            )
+        raise SpotifyApiError(
+            NETWORK_TIMEOUT_STATUS,
+            f"Не удалось получить токен Spotify: {last_error}",
+        )
+
+    access_token = payload.get("access_token")
+    if not access_token:
+        raise SpotifyApiError(401, "Spotify не вернул access_token. Проверьте SPOTIFY_CLIENT_ID/SECRET.")
+
+    _TOKEN_CACHE["access_token"] = access_token
+    _TOKEN_CACHE["expires_at"] = time.time() + int(payload.get("expires_in", 3600)) - 60
+    return str(access_token)
 
 
-def search_track(title: str, artist: str) -> Optional[Dict[str, str]]:
+def search_tracks_for_mood(queries: List[str], limit: int = 30) -> List[Dict[str, str]]:
+    """Build recommendations on top of Spotify /search (parallel queries)."""
+
+    raw_items: List[Dict[str, object]] = []
+    last_error: Optional[SpotifyApiError] = None
+
+    # Run all queries concurrently — typical wall-clock time drops from
+    # O(n * latency) to O(1 * latency).
+    with ThreadPoolExecutor(max_workers=min(len(queries), 6)) as pool:
+        future_to_query = {pool.submit(_search_query, q): q for q in queries}
+        for future in as_completed(future_to_query):
+            try:
+                items = future.result()
+                raw_items.extend(items)
+            except SpotifyApiError as error:
+                last_error = error
+
+    if not raw_items and last_error is not None:
+        raise last_error
+
+    with_preview = _format_unique_tracks(raw_items, require_preview=True)
+    if len(with_preview) >= limit:
+        return with_preview[:limit]
+
+    fallback_pool = _format_unique_tracks(raw_items, require_preview=False)
+    combined: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    for track in with_preview + fallback_pool:
+        if track["id"] in seen:
+            continue
+        seen.add(track["id"])
+        combined.append(track)
+        if len(combined) >= limit:
+            break
+
+    return combined
+
+
+def search_track_metadata(title: str, artist: str) -> Optional[Dict[str, str]]:
+    """Look up a single track by title/artist, used as metadata enrichment helper."""
+
+    queries = (
+        f'track:"{title}" artist:"{artist}"',
+        f"{artist} {title}",
+    )
+
+    for query in queries:
+        try:
+            items = _search_query(query, limit=1, offset=0)
+        except SpotifyApiError:
+            continue
+
+        for item in items:
+            formatted = _format_track(item)
+            if formatted:
+                return formatted
+
+    return None
+
+
+def _search_query(query: str, limit: int = 50, offset: Optional[int] = None) -> List[Dict[str, object]]:
+    """Call Spotify /search; raise SpotifyApiError when API is unavailable."""
+
     token = get_app_access_token()
     if not token:
-        return None
+        raise SpotifyApiError(401, "Spotify access token is unavailable.")
 
-    query = urlencode({"q": f'track:"{title}" artist:"{artist}"', "type": "track", "limit": "1"})
+    safe_limit = max(1, min(int(limit), 50))
+    safe_offset = max(0, min(int(offset or 0), 950))
+    params = {
+        "q": query,
+        "type": "track",
+        "market": MARKET,
+        "limit": str(safe_limit),
+        "include_external": "audio",
+        "offset": str(safe_offset),
+    }
+
     request = Request(
-        f"{SPOTIFY_API_URL}/search?{query}",
+        f"{SPOTIFY_API_URL}/search?{urlencode(params)}",
         headers={"Authorization": f"Bearer {token}"},
     )
 
+    last_exception: Optional[BaseException] = None
+    for attempt in range(SEARCH_RETRY_ATTEMPTS):
+        try:
+            with urlopen(request, timeout=SEARCH_REQUEST_TIMEOUT) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                return payload.get("tracks", {}).get("items", []) or []
+        except HTTPError as error:
+            message = _extract_api_message(error)
+            raise SpotifyApiError(error.code, message) from error
+        except Exception as error:
+            last_exception = error
+            _logger.warning(
+                "Spotify search failed (attempt %s/%s) for %r: %s",
+                attempt + 1,
+                SEARCH_RETRY_ATTEMPTS,
+                query,
+                error,
+            )
+            if attempt < SEARCH_RETRY_ATTEMPTS - 1:
+                time.sleep(0.5 * (attempt + 1))
+
+    if last_exception is not None and _is_network_timeout(last_exception):
+        raise SpotifyApiError(NETWORK_TIMEOUT_STATUS, f"Таймаут поиска Spotify: {last_exception}")
+    raise SpotifyApiError(503, f"Spotify request failed: {last_exception}")
+
+
+def _extract_api_message(error: HTTPError) -> str:
     try:
-        with urlopen(request, timeout=5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        body = json.loads(error.read().decode("utf-8"))
+        return str(body.get("error", {}).get("message") or error.reason)
     except Exception:
+        return str(error.reason)
+
+
+def _format_track(track: Dict[str, object], require_preview: bool = True) -> Optional[Dict[str, str]]:
+    track_id = str(track.get("id") or "")
+    preview_url = track.get("preview_url")
+    available_markets = track.get("available_markets") or []
+    is_playable = track.get("is_playable", True)
+
+    if not track_id or not is_playable:
         return None
 
-    items = payload.get("tracks", {}).get("items", [])
-    if not items:
+    if available_markets and MARKET not in available_markets:
         return None
 
-    track = items[0]
-    images = track.get("album", {}).get("images", [])
+    if require_preview and not preview_url:
+        return None
+
+    album = track.get("album") if isinstance(track.get("album"), dict) else {}
+    images = album.get("images", []) if isinstance(album, dict) else []
+    artists = track.get("artists", [])
+
     return {
-        "id": track["id"],
-        "title": track["name"],
-        "artist": ", ".join(artist_item["name"] for artist_item in track.get("artists", [])),
-        "spotifyUrl": track.get("external_urls", {}).get("spotify", ""),
-        "coverUrl": images[-1]["url"] if images else "",
-        "duration": _format_duration(int(track.get("duration_ms", 0))),
+        "id": track_id,
+        "title": str(track.get("name") or "Untitled track"),
+        "artist": ", ".join(
+            str(artist.get("name")) for artist in artists if isinstance(artist, dict)
+        ),
+        "spotifyUrl": f"https://open.spotify.com/track/{track_id}",
+        "previewUrl": str(preview_url) if preview_url else None,
+        "coverUrl": images[0]["url"] if images and isinstance(images[0], dict) else "",
+        "duration": _format_duration(int(track.get("duration_ms") or 0)),
+        "source": "spotify",
     }
-
-
-def create_user_playlist(access_token: str, name: str, tracks: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
-    user = _spotify_get(access_token, "/me")
-    user_id = user.get("id") if user else None
-    if not user_id:
-        return None
-
-    playlist = _spotify_post(
-        access_token,
-        f"/users/{user_id}/playlists",
-        {"name": name, "public": False, "description": "Generated by Music Mood Matcher"},
-    )
-    playlist_id = playlist.get("id") if playlist else None
-    if not playlist_id:
-        return None
-
-    uris = []
-    for track in tracks:
-        track_id = track.get("id", "")
-        if len(track_id) == 22 and not track_id.startswith(("happy-", "sad-", "angry-", "neutral-")):
-            uris.append(f"spotify:track:{track_id}")
-
-    if uris:
-        _spotify_post(access_token, f"/playlists/{playlist_id}/tracks", {"uris": uris})
-
-    return {
-        "id": playlist_id,
-        "url": playlist.get("external_urls", {}).get("spotify", ""),
-    }
-
-
-def _spotify_get(access_token: str, path: str) -> Optional[Dict[str, object]]:
-    request = Request(
-        f"{SPOTIFY_API_URL}{path}",
-        headers={"Authorization": f"Bearer {access_token}"},
-    )
-
-    try:
-        with urlopen(request, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except Exception:
-        return None
-
-
-def _spotify_post(access_token: str, path: str, body: Dict[str, object]) -> Optional[Dict[str, object]]:
-    request = Request(
-        f"{SPOTIFY_API_URL}{path}",
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-
-    try:
-        with urlopen(request, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except Exception:
-        return None
 
 
 def _format_duration(duration_ms: int) -> str:
@@ -191,9 +270,22 @@ def _format_duration(duration_ms: int) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-def search_tracks(candidates: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    resolved = []
-    for candidate in candidates:
-        spotify_track = search_track(candidate["title"], candidate["artist"])
-        resolved.append({**candidate, **spotify_track} if spotify_track else candidate)
-    return resolved
+def _format_unique_tracks(
+    tracks: List[Dict[str, object]],
+    require_preview: bool,
+) -> List[Dict[str, str]]:
+    formatted_tracks: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    for track in tracks:
+        formatted = _format_track(track, require_preview=require_preview)
+        if not formatted:
+            continue
+
+        if formatted["id"] in seen:
+            continue
+
+        seen.add(formatted["id"])
+        formatted_tracks.append(formatted)
+
+    return formatted_tracks

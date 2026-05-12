@@ -1,9 +1,10 @@
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 
 Emotion = Literal["happy", "sad", "angry", "neutral"]
+EmotionWeights = Dict[Emotion, float]
 
 
 class MoodRequest(BaseModel):
@@ -19,6 +20,7 @@ class Track(BaseModel):
     duration: str
     coverUrl: str
     spotifyUrl: str
+    previewUrl: Optional[str] = None
     source: Optional[str] = None
     musicEmotion: Optional[Emotion] = None
     musicEmotionScore: Optional[float] = None
@@ -27,10 +29,16 @@ class Track(BaseModel):
 
 class Playlist(BaseModel):
     id: str
+    playlistId: Optional[str] = None
     name: str
     emotion: Emotion
+    emotionWeights: EmotionWeights = Field(
+        default_factory=lambda: {"happy": 0.0, "sad": 0.0, "angry": 0.0, "neutral": 1.0}
+    )
     spotifyUrl: str
     tracks: List[Track]
+    audioTargets: Dict[str, float] = Field(default_factory=dict)
+    seedGenres: List[str] = Field(default_factory=list)
 
 
 class SavedPlaylist(Playlist):
@@ -75,27 +83,5 @@ class SpotifyStatus(BaseModel):
     configured: bool
 
 
-class SpotifyAuthUrl(BaseModel):
-    url: str
-
-
-class SpotifyTokenRequest(BaseModel):
-    code: str
-    redirectUri: str
-
-
-class SpotifyTokenResponse(BaseModel):
-    accessToken: str
-    tokenType: str
-    expiresIn: int
-
-
-class SpotifyCreatePlaylistRequest(BaseModel):
-    accessToken: str
-    name: str
-    tracks: List[Track]
-
-
-class SpotifyCreatePlaylistResponse(BaseModel):
-    id: str
-    url: str
+class YoutubeSearchResponse(BaseModel):
+    videoId: Optional[str] = None

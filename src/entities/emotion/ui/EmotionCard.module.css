@@ -32,3 +32,35 @@
   text-transform: uppercase;
   border-radius: 999px;
 }
+
+.weights {
+  display: grid;
+  gap: 10px;
+}
+
+.weightRow {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) 44px;
+  gap: 10px;
+  align-items: center;
+  color: #5b5668;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.weightBar {
+  overflow: hidden;
+  height: 9px;
+  background: rgba(255, 255, 255, 0.72);
+  border-radius: 999px;
+}
+
+.weightBar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.weightRow strong {
+  text-align: right;
+}

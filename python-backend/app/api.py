@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from app.auth_service import get_profile, get_user_by_token, login_user, register_user, sync_profile
 from app.music import analyze_music_emotion
@@ -11,15 +11,12 @@ from app.schemas import (
     MusicEmotionResponse,
     Playlist,
     ProfileSnapshot,
-    SpotifyAuthUrl,
-    SpotifyCreatePlaylistRequest,
-    SpotifyCreatePlaylistResponse,
     SpotifyStatus,
-    SpotifyTokenRequest,
-    SpotifyTokenResponse,
     User,
+    YoutubeSearchResponse,
 )
-from app.spotify_service import build_authorize_url, create_user_playlist, exchange_code, is_spotify_configured
+from app.spotify_service import is_spotify_configured
+from app.youtube_service import search_youtube_video
 
 
 router = APIRouter(prefix="/api")
@@ -44,41 +41,6 @@ async def health_check():
 @router.get("/spotify/status", response_model=SpotifyStatus)
 async def spotify_status():
     return SpotifyStatus(configured=is_spotify_configured())
-
-
-@router.get("/spotify/auth-url", response_model=SpotifyAuthUrl)
-async def spotify_auth_url(redirect_uri: str, state: str = "music-mood"):
-    url = build_authorize_url(redirect_uri=redirect_uri, state=state)
-    if not url:
-        raise HTTPException(status_code=503, detail="Spotify credentials are not configured.")
-
-    return SpotifyAuthUrl(url=url)
-
-
-@router.post("/spotify/token", response_model=SpotifyTokenResponse)
-async def spotify_token(request: SpotifyTokenRequest):
-    token = exchange_code(code=request.code, redirect_uri=request.redirectUri)
-    if not token:
-        raise HTTPException(status_code=503, detail="Не удалось получить Spotify token.")
-
-    return SpotifyTokenResponse(
-        accessToken=str(token["access_token"]),
-        tokenType=str(token.get("token_type", "Bearer")),
-        expiresIn=int(token.get("expires_in", 3600)),
-    )
-
-
-@router.post("/spotify/playlists", response_model=SpotifyCreatePlaylistResponse)
-async def spotify_create_playlist(request: SpotifyCreatePlaylistRequest):
-    playlist = create_user_playlist(
-        access_token=request.accessToken,
-        name=request.name,
-        tracks=[track.model_dump() for track in request.tracks],
-    )
-    if not playlist:
-        raise HTTPException(status_code=503, detail="Не удалось создать Spotify playlist.")
-
-    return SpotifyCreatePlaylistResponse(id=playlist["id"], url=playlist["url"])
 
 
 @router.post("/auth/register", response_model=AuthResponse)
@@ -115,7 +77,15 @@ async def generate_mood_playlist(request: MoodRequest):
             detail="Анализ настроения временно недоступен. Попробуйте ещё раз.",
         )
 
-    return build_playlist(request)
+    try:
+        return build_playlist(request)
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@router.get("/youtube/search", response_model=YoutubeSearchResponse)
+async def youtube_search(q: str = Query(min_length=1)):
+    return YoutubeSearchResponse(videoId=search_youtube_video(q))
 
 
 @router.post("/music/emotion", response_model=MusicEmotionResponse)

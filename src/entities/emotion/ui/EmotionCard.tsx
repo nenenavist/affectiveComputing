@@ -6,10 +6,18 @@ import styles from './EmotionCard.module.css';
 
 type EmotionCardProps = {
   emotion: Emotion;
+  emotionWeights?: Partial<Record<Emotion, number>>;
 };
 
-export const EmotionCard = ({ emotion }: EmotionCardProps) => {
+const emotions: Emotion[] = ['happy', 'sad', 'angry', 'neutral'];
+
+export const EmotionCard = ({ emotion, emotionWeights }: EmotionCardProps) => {
   const config = emotionConfig[emotion];
+  const sortedWeights = emotionWeights
+    ? emotions
+        .map((item) => ({ emotion: item, value: emotionWeights[item] ?? 0 }))
+        .sort((a, b) => b.value - a.value)
+    : null;
 
   return (
     <motion.div
@@ -22,7 +30,7 @@ export const EmotionCard = ({ emotion }: EmotionCardProps) => {
         <Stack className={styles.content} spacing={2.5}>
           <span className={styles.badge} style={{ backgroundColor: config.color }}>
             <AutoAwesomeRounded fontSize="small" />
-            Настроение определено
+            Your mood
           </span>
           <div>
             <Typography variant="h4" sx={{ color: config.color }}>
@@ -32,6 +40,24 @@ export const EmotionCard = ({ emotion }: EmotionCardProps) => {
               {config.description}
             </Typography>
           </div>
+          {sortedWeights ? (
+            <div className={styles.weights}>
+              {sortedWeights.map(({ emotion: item, value }) => {
+                const itemConfig = emotionConfig[item];
+                const percent = Math.round(value * 100);
+
+                return (
+                  <div key={item} className={styles.weightRow}>
+                    <span>{itemConfig.label}</span>
+                    <div className={styles.weightBar} aria-label={`${itemConfig.label}: ${percent}%`}>
+                      <span style={{ width: `${percent}%`, backgroundColor: itemConfig.accent }} />
+                    </div>
+                    <strong>{percent}%</strong>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
         </Stack>
       </Card>
     </motion.div>

@@ -1,4 +1,5 @@
 import { Card, CardContent, Stack, Typography } from '@mui/material';
+import { useState } from 'react';
 import { Track } from '../../entities/playlist/model/types';
 import { TrackCard } from '../../entities/track/ui/TrackCard';
 import { EmptyState } from '../../shared/ui/EmptyState/EmptyState';
@@ -9,6 +10,8 @@ type LikedTracksPanelProps = {
 };
 
 export const LikedTracksPanel = ({ tracks, onRemove }: LikedTracksPanelProps) => {
+  const [activeTrackId, setActiveTrackId] = useState<string | null>(null);
+
   return (
     <Card>
       <CardContent>
@@ -19,7 +22,14 @@ export const LikedTracksPanel = ({ tracks, onRemove }: LikedTracksPanelProps) =>
           {tracks.length > 0 ? (
             <Stack spacing={1.5}>
               {tracks.map((track) => (
-                <TrackCard key={track.id} track={track} liked onToggleLike={onRemove} />
+                <TrackCard
+                  key={track.id}
+                  track={track}
+                  liked
+                  onToggleLike={onRemove}
+                  activeTrackId={activeTrackId}
+                  onActivateTrack={setActiveTrackId}
+                />
               ))}
             </Stack>
           ) : (

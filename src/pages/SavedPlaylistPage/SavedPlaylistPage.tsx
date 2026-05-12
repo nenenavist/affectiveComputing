@@ -1,4 +1,4 @@
-import { DeleteOutlineRounded, OpenInNewRounded } from '@mui/icons-material';
+import { DeleteOutlineRounded } from '@mui/icons-material';
 import { Card, CardContent, Snackbar, Stack, Typography } from '@mui/material';
 import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -57,20 +57,20 @@ export const SavedPlaylistPage = () => {
         </div>
         <div className={styles.grid}>
           <Stack spacing={3}>
-            <EmotionCard emotion={playlist.emotion} />
+            <EmotionCard emotion={playlist.emotion} emotionWeights={playlist.emotionWeights} />
             <Card>
               <CardContent>
                 <Stack spacing={2.5}>
                   <Typography variant="h5" sx={{ fontWeight: 850 }}>
-                    Предпросмотр Spotify
+                    Плеер внутри сайта
                   </Typography>
-                  <iframe
-                    className={styles.embed}
-                    title={`${playlist.name} Spotify embed`}
-                    src={`https://open.spotify.com/embed/playlist/${playlist.id}`}
-                    allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-                    loading="lazy"
-                  />
+                  <Typography color="text.secondary">
+                    Сохранённый плейлист можно слушать прямо здесь: аудио preview или YouTube fallback для треков без preview.
+                  </Typography>
+                  <div className={styles.summary}>
+                    <strong>{playlist.tracks.length}</strong>
+                    <span>треков сохранено</span>
+                  </div>
                 </Stack>
               </CardContent>
             </Card>
@@ -79,12 +79,6 @@ export const SavedPlaylistPage = () => {
             <CardContent>
               <Stack spacing={3}>
                 <div className={styles.actions}>
-                  <AppButton
-                    startIcon={<OpenInNewRounded />}
-                    onClick={() => window.open(playlist.spotifyUrl, '_blank', 'noopener,noreferrer')}
-                  >
-                    Открыть в Spotify
-                  </AppButton>
                   <AppButton
                     variant="outlined"
                     color="error"

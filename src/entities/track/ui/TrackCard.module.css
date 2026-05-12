@@ -27,12 +27,11 @@
   border-radius: 14px;
 }
 
-.trackButton {
+.trackInfo {
   min-width: 0;
   padding: 0;
   color: inherit;
   text-align: left;
-  cursor: pointer;
   background: transparent;
   border: 0;
 }
@@ -68,6 +67,22 @@
   display: flex;
   gap: 4px;
   align-items: center;
+}
+
+.playerRow {
+  grid-column: 1 / -1;
+}
+
+.audioPlayer {
+  width: 100%;
+}
+
+.youtubePlayer {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #15151d;
+  border: 0;
+  border-radius: 16px;
 }
 
 @media (max-width: 560px) {

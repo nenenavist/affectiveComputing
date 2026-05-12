@@ -82,7 +82,6 @@ def get_top_tracks_by_tag(tag: str, limit: int = 12) -> List[Dict[str, str]]:
                     "artist": artist_name,
                     "duration": "0:00",
                     "coverUrl": "",
-                    "spotifyUrl": track.get("url", ""),
                     "source": "lastfm",
                 }
             )

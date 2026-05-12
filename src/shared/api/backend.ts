@@ -65,3 +65,14 @@ export const syncProfile = async (token: string, profile: ProfileSnapshot): Prom
 
   return response.json() as Promise<ProfileSnapshot>;
 };
+
+export const searchYoutubeVideo = async (query: string): Promise<string | null> => {
+  const response = await fetch(`${API_BASE_URL}/api/youtube/search?q=${encodeURIComponent(query)}`);
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = (await response.json()) as { videoId?: string | null };
+  return payload.videoId ?? null;
+};

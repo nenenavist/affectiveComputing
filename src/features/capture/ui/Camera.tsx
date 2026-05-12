@@ -11,9 +11,7 @@ type CameraProps = {
 export const Camera = ({ enabled, onCaptureChange, onCameraAvailabilityChange }: CameraProps) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const countdownTimerRef = useRef<number | null>(null);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
-  const [countdown, setCountdown] = useState<number | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [error, setError] = useState('');
 
@@ -67,9 +65,6 @@ export const Camera = ({ enabled, onCaptureChange, onCameraAvailabilityChange }:
 
     return () => {
       stopCamera();
-      if (countdownTimerRef.current) {
-        window.clearInterval(countdownTimerRef.current);
-      }
     };
   }, [enabled, onCameraAvailabilityChange, startCamera, stopCamera]);
 
@@ -97,26 +92,11 @@ export const Camera = ({ enabled, onCaptureChange, onCameraAvailabilityChange }:
   };
 
   const handleCapture = () => {
-    if (!cameraReady || countdown !== null) {
+    if (!cameraReady) {
       return;
     }
 
-    setCountdown(3);
-    let nextValue = 3;
-    countdownTimerRef.current = window.setInterval(() => {
-      nextValue -= 1;
-
-      if (nextValue === 0) {
-        if (countdownTimerRef.current) {
-          window.clearInterval(countdownTimerRef.current);
-        }
-        setCountdown(null);
-        captureFrame();
-        return;
-      }
-
-      setCountdown(nextValue);
-    }, 1000);
+    captureFrame();
   };
 
   const handleRetake = () => {
@@ -159,12 +139,11 @@ export const Camera = ({ enabled, onCaptureChange, onCameraAvailabilityChange }:
               className={styles.captureButton}
               type="button"
               onClick={handleCapture}
-              disabled={!cameraReady || countdown !== null}
+              disabled={!cameraReady}
               aria-label="Сделать снимок"
             />
           </div>
         ) : null}
-        {countdown !== null ? <div className={styles.countdown}>{countdown}</div> : null}
       </div>
       {error ? <Alert severity="warning">{error}</Alert> : null}
     </Stack>
