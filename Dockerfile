@@ -17,8 +17,10 @@ WORKDIR /app
 COPY python-backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# On ~512 MB hosts (Railway hobby), set LIGHTWEIGHT_ML=1 in service Variables
-# so mood analysis skips SentenceTransformer + ViT and avoids OOM (Killed).
+# Docker/Railway hobby instances OOM if SentenceTransformer + ViT load (~512 MB).
+# This default avoids HF downloads and heavy RAM until you set LIGHTWEIGHT_ML=0
+# in host Variables (with enough RAM) or set SKIP_SENTENCE_TRANSFORMER / SKIP_IMAGE_EMOTION_MODEL.
+ENV LIGHTWEIGHT_ML=1
 
 COPY python-backend/ .
 

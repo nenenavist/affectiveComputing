@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 
@@ -8,6 +9,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import router as api_router
 from app.db import init_db
+from app.ml_runtime_env import lightweight_ml
+
+_logger = logging.getLogger(__name__)
 
 
 def _cors_origins() -> list[str]:
@@ -22,6 +26,11 @@ def _cors_origins() -> list[str]:
 
 def create_app() -> FastAPI:
     init_db()
+
+    if lightweight_ml():
+        _logger.info(
+            "LIGHTWEIGHT_ML is on: SentenceTransformer and ViT are not loaded (low RAM / Railway)."
+        )
 
     static_dir = os.getenv("STATIC_DIR", "").strip()
     static_path = Path(static_dir) if static_dir else None

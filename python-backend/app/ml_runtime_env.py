@@ -1,4 +1,8 @@
-"""Runtime toggles for ML (memory-constrained hosts, e.g. Railway ~512 MB)."""
+"""Runtime toggles for ML (memory-constrained hosts, e.g. Railway ~512 MB).
+
+Kept outside ``app.ml`` so importing flags does not execute ``app.ml``'s package
+``__init__`` (which pulls emotion helpers) at app startup.
+"""
 
 from __future__ import annotations
 

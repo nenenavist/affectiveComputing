@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from app.ml.runtime_flags import skip_sentence_transformer
+from app.ml_runtime_env import skip_sentence_transformer
 from app.schemas import Emotion
 
 # ── Emoji → emotion mapping (strong explicit signal) ────────────────────────

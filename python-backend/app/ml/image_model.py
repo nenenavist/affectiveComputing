@@ -13,7 +13,7 @@ from functools import lru_cache
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 
-from app.ml.runtime_flags import skip_image_emotion_model
+from app.ml_runtime_env import skip_image_emotion_model
 from app.schemas import Emotion
 
 
