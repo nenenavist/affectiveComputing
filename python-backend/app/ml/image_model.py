@@ -1,13 +1,7 @@
-"""Image emotion recognition powered by a pretrained Vision Transformer.
+"""Image emotion recognition with a pretrained Vision Transformer.
 
-We use `dima806/facial_emotions_image_detection` — a ViT model fine-tuned
-on FER+ (and several other facial-emotion datasets), reaching ~91 % accuracy
-on FER+ vs the ~75 % we got with our custom CNN.  It handles real-world
-selfies (varied lighting, color, angle) MUCH better than the small CNN
-trained on 48×48 grayscale FER-2013 images.
-
-First-time model download is ~88 MB and is cached under
-~/.cache/huggingface/.  Subsequent runs are instant.
+Uses ``dima806/facial_emotions_image_detection`` (Hugging Face).  First
+download is ~88 MB, cached under ``~/.cache/huggingface/``.
 """
 from __future__ import annotations
 
@@ -17,7 +11,6 @@ import logging
 import math
 from functools import lru_cache
 from io import BytesIO
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from app.schemas import Emotion
@@ -48,10 +41,6 @@ NEUTRAL_PRIOR: Dict[Emotion, float] = {
     "angry": 0.14,
     "neutral": 0.50,
 }
-
-# Fallback weights to the legacy CNN (artifacts/emotion_cnn.pth) if the HF
-# model cannot be loaded for any reason.
-LEGACY_ARTIFACT_PATH = Path(__file__).resolve().parent / "artifacts" / "emotion_cnn.pth"
 
 _logger = logging.getLogger(__name__)
 

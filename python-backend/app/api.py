@@ -71,12 +71,6 @@ async def update_profile(profile: ProfileSnapshot, user: User = Depends(current_
 
 @router.post("/mood/playlist", response_model=Playlist)
 async def generate_mood_playlist(request: MoodRequest):
-    if "api error" in request.text.lower():
-        raise HTTPException(
-            status_code=503,
-            detail="Анализ настроения временно недоступен. Попробуйте ещё раз.",
-        )
-
     try:
         return build_playlist(request)
     except ValueError as error:

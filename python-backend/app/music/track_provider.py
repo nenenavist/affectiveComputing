@@ -13,13 +13,13 @@ API key (https://www.last.fm/api/account/create).
 """
 from __future__ import annotations
 
+import json
 import logging
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-import json
 
 from app.music.lastfm_client import (
     get_top_tracks_for_tags,
@@ -53,13 +53,6 @@ EMOTION_TAGS: Dict[Emotion, List[str]] = {
         "background", "lounge", "minimal", "study", "instrumental",
         "lo-fi", "jazz", "chillout", "focus", "soft instrumental",
     ],
-}
-
-EMOTION_PROFILE_PRESETS: Dict[Emotion, Dict[str, float]] = {
-    "happy": {"valence": 0.82, "energy": 0.72, "tempo": 122.0},
-    "sad": {"valence": 0.22, "energy": 0.32, "tempo": 78.0},
-    "angry": {"valence": 0.42, "energy": 0.9, "tempo": 142.0},
-    "neutral": {"valence": 0.55, "energy": 0.48, "tempo": 100.0},
 }
 
 

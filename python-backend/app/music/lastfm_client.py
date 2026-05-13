@@ -11,11 +11,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import socket
+import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -29,14 +29,6 @@ _logger = logging.getLogger(__name__)
 
 def is_configured() -> bool:
     return bool(os.getenv("LASTFM_API_KEY"))
-
-
-def _is_network_timeout(error: BaseException) -> bool:
-    if isinstance(error, (socket.timeout, TimeoutError)):
-        return True
-    if isinstance(error, URLError) and isinstance(error.reason, (socket.timeout, TimeoutError)):
-        return True
-    return False
 
 
 def _call(params: Dict[str, str]) -> Optional[Dict]:
@@ -142,7 +134,6 @@ def get_top_tracks_for_tags(tags: List[str], total_limit: int = 60) -> List[Dict
     with ThreadPoolExecutor(max_workers=min(len(tags), 6)) as pool:
         # Add a small random page (1 or 2) per tag so consecutive requests
         # return different songs even for the same tag.
-        import random
         futures = {
             pool.submit(get_top_tracks_by_tag, tag, per_tag_limit, random.choice([1, 2])): tag
             for tag in tags
@@ -155,40 +146,3 @@ def get_top_tracks_for_tags(tags: List[str], total_limit: int = 60) -> List[Dict
 
     return pool_tracks
 
-
-def get_similar_tracks(artist: str, title: str, limit: int = 12) -> List[Dict[str, str]]:
-    """Tracks musically similar to a given one (Last.fm community)."""
-    payload = _call({
-        "method": "track.getsimilar",
-        "artist": artist,
-        "track": title,
-        "limit": str(limit),
-        "autocorrect": "1",
-    })
-    if not payload:
-        return []
-
-    items = payload.get("similartracks", {}).get("track", [])
-    if isinstance(items, dict):
-        items = [items]
-
-    out: List[Dict[str, str]] = []
-    for index, item in enumerate(items):
-        if not isinstance(item, dict):
-            continue
-        a = item.get("artist", {})
-        artist_name = a.get("name") if isinstance(a, dict) else None
-        title_name = item.get("name")
-        if not artist_name or not title_name:
-            continue
-        out.append({
-            "id": item.get("mbid") or f"lastfm-sim-{index}",
-            "title": str(title_name),
-            "artist": str(artist_name),
-            "duration": "0:00",
-            "coverUrl": "",
-            "spotifyUrl": "",
-            "previewUrl": None,
-            "source": "lastfm",
-        })
-    return out

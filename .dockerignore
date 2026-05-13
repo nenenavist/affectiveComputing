@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+python-backend/venv
+**/__pycache__
+**/*.pyc
+.git
+dist
+.env
+*.md
+.cursor
