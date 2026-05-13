@@ -16,6 +16,7 @@ from app.spotify_service import (
     SpotifyApiError,
     get_audio_features,
     get_recommendations,
+    is_spotify_configured,
     search_tracks_for_mood as spotify_search_tracks_for_mood,
 )
 
@@ -113,8 +114,8 @@ def build_playlist(request: MoodRequest) -> Playlist:
             "high-quality mood-based track selection."
         )
 
-    # ── FALLBACK 1: Spotify /recommendations (only if not yet disabled) ──────
-    if len(raw_tracks) < MIN_TRACKS_REQUIRED:
+    # ── FALLBACK 1–2: Spotify (needs valid SPOTIFY_CLIENT_ID + SECRET in env)
+    if len(raw_tracks) < MIN_TRACKS_REQUIRED and is_spotify_configured():
         try:
             randomised_targets = _randomise_audio_targets(audio_targets)
             spotify_tracks = get_recommendations(
@@ -128,17 +129,21 @@ def build_playlist(request: MoodRequest) -> Playlist:
             spotify_error = error
             _logger.warning("Spotify /recommendations unavailable: %s", error)
 
-    # ── FALLBACK 2: Spotify /search if everything else failed ────────────────
-    if len(raw_tracks) < MIN_TRACKS_REQUIRED:
-        try:
-            queries = _build_search_queries(seed_genres, emotion_weights)
-            search_tracks = spotify_search_tracks_for_mood(queries=queries, limit=30)
-            existing_ids = {t["id"] for t in raw_tracks}
-            raw_tracks.extend(t for t in search_tracks if t["id"] not in existing_ids)
-        except SpotifyApiError as error:
-            if spotify_error is None:
-                spotify_error = error
-            _logger.warning("Spotify /search fallback failed: %s", error)
+        if len(raw_tracks) < MIN_TRACKS_REQUIRED:
+            try:
+                queries = _build_search_queries(seed_genres, emotion_weights)
+                search_tracks = spotify_search_tracks_for_mood(queries=queries, limit=30)
+                existing_ids = {t["id"] for t in raw_tracks}
+                raw_tracks.extend(t for t in search_tracks if t["id"] not in existing_ids)
+            except SpotifyApiError as error:
+                if spotify_error is None:
+                    spotify_error = error
+                _logger.warning("Spotify /search fallback failed: %s", error)
+    elif len(raw_tracks) < MIN_TRACKS_REQUIRED:
+        _logger.info(
+            "Spotify fallbacks skipped: set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET "
+            "on this service (Railway Variables) for Spotify recommendations/search."
+        )
 
     # ── FALLBACK 3: iTunes search directly ───────────────────────────────────
     if len(raw_tracks) < MIN_TRACKS_REQUIRED:
@@ -178,8 +183,8 @@ def build_playlist(request: MoodRequest) -> Playlist:
             if not audio_features:
                 _logger.warning(
                     "Spotify /audio-features returned no data — "
-                    "likely deprecated for this Developer App. "
-                    "Falling back to title-based mood classification for badges."
+                    "likely deprecated for this app. "
+                    "Track mood badges use Last.fm tag or your dominant mood instead."
                 )
         except Exception as error:
             _logger.warning("Audio-features fetch failed: %s", error)
@@ -232,8 +237,7 @@ def _rank_tracks(
            danceability.  Tracks closer to the target rank higher.
         2. Tracks without audio_features (iTunes, missing data) get a neutral
            score and are randomised among themselves.
-        3. Apply quality bonus + soft opposite-keyword penalty (e.g. avoid a
-           track named "Sad" in a happy playlist as last-resort heuristic).
+        3. Apply quality bonus.
         4. Cap by artist (≤ 2) and remove near-duplicate titles.
     """
     dominant_emotion = max(emotion_weights, key=emotion_weights.get)
