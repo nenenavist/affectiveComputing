@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from app.ml.runtime_flags import skip_sentence_transformer
 from app.schemas import Emotion
 
 # ── Emoji → emotion mapping (strong explicit signal) ────────────────────────
@@ -391,6 +392,9 @@ def get_transformer_classifier():
     the dependencies are missing.  Once loaded the result is cached, so
     subsequent calls are O(1).
     """
+    if skip_sentence_transformer():
+        return None
+
     if not TRANSFORMER_CLF_PATH.exists() or not TRANSFORMER_ENCODER_PATH.exists():
         return None
 

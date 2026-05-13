@@ -17,6 +17,9 @@ WORKDIR /app
 COPY python-backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# On ~512 MB hosts (Railway hobby), set LIGHTWEIGHT_ML=1 in service Variables
+# so mood analysis skips SentenceTransformer + ViT and avoids OOM (Killed).
+
 COPY python-backend/ .
 
 ENV STATIC_DIR=/app/static

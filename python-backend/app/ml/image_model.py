@@ -13,6 +13,7 @@ from functools import lru_cache
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 
+from app.ml.runtime_flags import skip_image_emotion_model
 from app.schemas import Emotion
 
 
@@ -227,6 +228,12 @@ class ImageEmotionModel:
 
 @lru_cache(maxsize=1)
 def get_image_model() -> Optional[ImageEmotionModel]:
+    if skip_image_emotion_model():
+        _logger.info(
+            "SKIP_IMAGE_EMOTION_MODEL / LIGHTWEIGHT_ML set — skipping ViT image model.",
+        )
+        return None
+
     try:
         return ImageEmotionModel()
     except Exception as error:
