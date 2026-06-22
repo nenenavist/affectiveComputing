@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 _logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -37,6 +37,57 @@ ENCODER_NAME_PATH = ARTIFACTS_DIR / "text_encoder.txt"
 ENCODER_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 EMOTIONS = ["happy", "sad", "angry", "neutral"]
+IN_DOMAIN_REPEAT = 4
+
+IN_DOMAIN_CORPUS: Sequence[Tuple[str, str]] = (
+    # Neutral everyday inputs that public emotion datasets often over-label.
+    ("обычный день, ничего особенного", "neutral"),
+    ("просто рутина и спокойная работа", "neutral"),
+    ("день как день, без ярких эмоций", "neutral"),
+    ("ничего сильного не чувствую, просто занимаюсь делами", "neutral"),
+    ("не злюсь, просто спокойно работаю", "neutral"),
+    ("не грустно и не радостно, обычное состояние", "neutral"),
+    ("я не расстроена, просто устала и молчу", "neutral"),
+    ("ровное настроение, фокус на задачах", "neutral"),
+    ("just a normal quiet day", "neutral"),
+    ("routine day, nothing special", "neutral"),
+    ("not angry, just focused", "neutral"),
+    ("not sad, just quiet and tired", "neutral"),
+    ("calm work mode, no strong feelings", "neutral"),
+    ("nothing dramatic, just doing tasks", "neutral"),
+    # Contrast clauses where the final clause carries the intended mood.
+    ("устала, но довольна результатом", "happy"),
+    ("день был тяжелый, но я рада, что справилась", "happy"),
+    ("нервничала утром, но сейчас спокойно и хорошо", "happy"),
+    ("tired but proud and relieved", "happy"),
+    ("rough morning but happy with the result", "happy"),
+    ("не грущу больше, стало легче и радостнее", "happy"),
+    ("i am not sad anymore, actually relieved", "happy"),
+    ("i was stressed, but now i feel good", "happy"),
+    ("злюсь, но пытаюсь успокоиться", "angry"),
+    ("пытаюсь держаться, но внутри все бесит", "angry"),
+    ("говорю спокойно, но очень раздражена", "angry"),
+    ("i look calm, but i am furious inside", "angry"),
+    ("not fine, i am angry and overwhelmed", "angry"),
+    ("все нормально снаружи, но внутри очень грустно", "sad"),
+    ("улыбаюсь, но на душе пусто", "sad"),
+    ("i pretend to be okay, but i feel empty", "sad"),
+    # Short Russian self-reports common in the app UI.
+    ("мне грустно", "sad"),
+    ("я грустная", "sad"),
+    ("мне плохо", "sad"),
+    ("я злюсь", "angry"),
+    ("я злая", "angry"),
+    ("я рада", "happy"),
+    ("мне хорошо", "happy"),
+    ("всё норм", "neutral"),
+    ("нормально", "neutral"),
+    ("обычный день", "neutral"),
+    ("i feel sad", "sad"),
+    ("i am angry", "angry"),
+    ("i am happy", "happy"),
+    ("feeling neutral", "neutral"),
+)
 
 
 # ── Dataset loaders ────────────────────────────────────────────────────────
@@ -131,6 +182,31 @@ def _balance_classes(texts: List[str], labels: List[str], cap: int = 5000) -> Tu
     return out_texts, out_labels
 
 
+def _load_in_domain_corpus(repeat: int = IN_DOMAIN_REPEAT) -> Tuple[List[str], List[str]]:
+    """Small app-specific corpus for short RU/EN mood inputs.
+
+    Public emotion corpora are useful, but they overfit to tweet-style explicit
+    affect. The app mostly receives short self-reports, negations, and contrast
+    clauses, so we upweight curated examples after public-class balancing.
+    """
+    from app.ml.text_model import TRAINING_CORPUS
+
+    base_examples = list(TRAINING_CORPUS) + list(IN_DOMAIN_CORPUS)
+    texts = [text for text, _label in base_examples for _ in range(repeat)]
+    labels = [label for _text, label in base_examples for _ in range(repeat)]
+
+    counts: Dict[str, int] = {emotion: 0 for emotion in EMOTIONS}
+    for label in labels:
+        counts[label] = counts.get(label, 0) + 1
+    _logger.info(
+        "  → %d in-domain examples after repeat=%d (%s).",
+        len(texts),
+        repeat,
+        ", ".join(f"{emotion}={counts.get(emotion, 0)}" for emotion in EMOTIONS),
+    )
+    return texts, labels
+
+
 # ── Encoder ────────────────────────────────────────────────────────────────
 
 EMBED_CACHE_PATH = ARTIFACTS_DIR / "text_embeddings_cache.npz"
@@ -177,25 +253,30 @@ def _encode(texts: List[str], labels: List[str]):
 
 def _train_classifier(X, y):
     import numpy as np
+    from sklearn.calibration import CalibratedClassifierCV
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import train_test_split
 
     X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.1, stratify=y, random_state=42
+        X, y, test_size=0.12, stratify=y, random_state=42
     )
     _logger.info("Train/val: %d / %d", len(X_train), len(X_val))
 
-    clf = LogisticRegression(
-        C=2.0,
-        class_weight="balanced",
-        max_iter=2000,
-        solver="lbfgs",
-        n_jobs=-1,
+    clf = CalibratedClassifierCV(
+        LogisticRegression(
+            C=4.0,
+            class_weight="balanced",
+            max_iter=3000,
+            solver="lbfgs",
+            n_jobs=-1,
+        ),
+        method="sigmoid",
+        cv=5,
     )
     clf.fit(X_train, y_train)
 
     val_acc = clf.score(X_val, y_val)
-    _logger.info("Validation accuracy: %.3f", val_acc)
+    _logger.info("Validation accuracy (calibrated): %.3f", val_acc)
 
     proba = clf.predict_proba(X_val)
     pred = np.argmax(proba, axis=1)
@@ -211,7 +292,20 @@ def _train_classifier(X, y):
         row_counts = [confusion[emotion][p] for p in EMOTIONS]
         _logger.info("  %8s  %s", emotion, "  ".join(f"{c:>8d}" for c in row_counts))
 
-    return clf
+    final_clf = CalibratedClassifierCV(
+        LogisticRegression(
+            C=4.0,
+            class_weight="balanced",
+            max_iter=3000,
+            solver="lbfgs",
+            n_jobs=-1,
+        ),
+        method="sigmoid",
+        cv=5,
+    )
+    final_clf.fit(X, y)
+    _logger.info("Final calibrated model fit on %d examples.", len(y))
+    return final_clf
 
 
 def _save(clf) -> None:
@@ -229,16 +323,19 @@ def _save(clf) -> None:
 def main() -> None:
     en_texts, en_labels = _load_dair_emotion()
     ru_texts, ru_labels = _load_cedr()
-    texts = en_texts + ru_texts
-    labels = en_labels + ru_labels
-    _logger.info("Total raw examples: %d", len(texts))
+    public_texts = en_texts + ru_texts
+    public_labels = en_labels + ru_labels
+    _logger.info("Total raw public examples: %d", len(public_texts))
 
-    if not texts:
+    if not public_texts:
         _logger.error("No training data available — aborting.")
         sys.exit(1)
 
-    _logger.info("Balancing classes (cap=4000 per class) …")
-    texts, labels = _balance_classes(texts, labels, cap=4000)
+    _logger.info("Balancing public classes (cap=4000 per class) …")
+    texts, labels = _balance_classes(public_texts, public_labels, cap=4000)
+    domain_texts, domain_labels = _load_in_domain_corpus()
+    texts.extend(domain_texts)
+    labels.extend(domain_labels)
     _logger.info("Final corpus: %d examples", len(texts))
 
     embeddings = _encode(texts, labels)

@@ -3,6 +3,7 @@ uvicorn
 numpy
 pillow
 torch
+torchvision
 scikit-learn
 opencv-python-headless
 sentence-transformers

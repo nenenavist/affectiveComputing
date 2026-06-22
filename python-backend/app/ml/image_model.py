@@ -1,7 +1,8 @@
-"""Image emotion recognition with a pretrained Vision Transformer.
+"""Camera image emotion recognition.
 
-Uses ``dima806/facial_emotions_image_detection`` (Hugging Face).  First
-download is ~88 MB, cached under ``~/.cache/huggingface/``.
+Default runtime uses the local FER-2013 CNN artifact trained by
+``app.ml.train_image_model``.  Set ``IMAGE_EMOTION_BACKEND=hf`` to use the
+optional Hugging Face ViT backend instead.
 """
 from __future__ import annotations
 
@@ -9,15 +10,21 @@ import base64
 import binascii
 import logging
 import math
+import os
 from functools import lru_cache
 from io import BytesIO
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from app.ml.emotion_cnn import FER_RAW_CLASSES, FER_TO_APP, EmotionCNN
 from app.ml_runtime_env import skip_image_emotion_model
 from app.schemas import Emotion
 
 
 HF_MODEL_ID = "dima806/facial_emotions_image_detection"
+CNN_ARTIFACT_PATH = Path(__file__).resolve().parent / "artifacts" / "emotion_cnn.pth"
+CNN_INPUT_H = 48
+CNN_INPUT_W = 48
 
 # The HF model uses these label IDs.  We map them to our 4-class app
 # emotion taxonomy.
@@ -36,6 +43,8 @@ HF_LABEL_TO_APP: Dict[str, Emotion] = {
 }
 
 EMOTION_ORDER: List[Emotion] = ["happy", "sad", "angry", "neutral"]
+CNN_RAW_CLASSES = FER_RAW_CLASSES
+CNN_LABEL_TO_APP: Dict[str, Emotion] = FER_TO_APP  # type: ignore[assignment]
 NEUTRAL_PRIOR: Dict[Emotion, float] = {
     "happy": 0.18,
     "sad": 0.18,
@@ -46,23 +55,64 @@ NEUTRAL_PRIOR: Dict[Emotion, float] = {
 _logger = logging.getLogger(__name__)
 
 
+def _truthy_env(name: str) -> bool:
+    raw = os.getenv(name)
+    return bool(raw and raw.strip().lower() in {"1", "true", "yes", "on"})
+
+
+def _select_torch_device(torch):
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def _build_cnn_model():
+    return EmotionCNN(num_classes=7)
+
+
 class ImageEmotionModel:
     def __init__(self) -> None:
         import torch
-        from transformers import AutoImageProcessor, AutoModelForImageClassification
 
         self.torch = torch
-
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-        else:
-            self.device = torch.device("cpu")
+        self.device = _select_torch_device(torch)
 
         _logger.info("Loading HuggingFace image model %s on %s …", HF_MODEL_ID, self.device)
-        self.processor = AutoImageProcessor.from_pretrained(HF_MODEL_ID)
-        self.model = AutoModelForImageClassification.from_pretrained(HF_MODEL_ID)
+        allow_download = _truthy_env("ALLOW_HF_DOWNLOAD")
+        previous_offline = os.environ.get("HF_HUB_OFFLINE")
+        hf_constants = None
+        previous_hf_hub_offline = None
+        try:
+            from huggingface_hub import constants as hf_constants
+
+            previous_hf_hub_offline = hf_constants.HF_HUB_OFFLINE
+        except Exception:
+            pass
+        if not allow_download:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            if hf_constants is not None:
+                hf_constants.HF_HUB_OFFLINE = True
+        try:
+            from transformers import AutoImageProcessor, AutoModelForImageClassification
+
+            self.processor = AutoImageProcessor.from_pretrained(
+                HF_MODEL_ID,
+                local_files_only=not allow_download,
+            )
+            self.model = AutoModelForImageClassification.from_pretrained(
+                HF_MODEL_ID,
+                local_files_only=not allow_download,
+            )
+        finally:
+            if not allow_download:
+                if previous_offline is None:
+                    os.environ.pop("HF_HUB_OFFLINE", None)
+                else:
+                    os.environ["HF_HUB_OFFLINE"] = previous_offline
+                if hf_constants is not None and previous_hf_hub_offline is not None:
+                    hf_constants.HF_HUB_OFFLINE = previous_hf_hub_offline
         self.model.eval()
         self.model.to(self.device)
 
@@ -194,16 +244,18 @@ class ImageEmotionModel:
             / math.log(len(probabilities))
         )
 
-        # ViT predictions are typically much sharper than CNN.  We blend toward
-        # neutral ONLY when the model is genuinely uncertain or no face was
-        # detected.  Numbers chosen to preserve strong predictions.
-        blend_ratio = min(0.10, 0.02 + entropy * 0.08)
+        # Blend toward neutral only for genuinely weak/low-information frames.
+        # Haar detection often misses webcam faces, so missing `has_face` must
+        # not flatten clear sad/angry predictions into neutral.
+        blend_ratio = min(0.08, 0.02 + entropy * 0.06)
+        if top >= 0.55 and margin >= 0.12:
+            blend_ratio *= 0.35
         if not has_face:
-            blend_ratio = max(blend_ratio, 0.30)
+            blend_ratio = max(blend_ratio, 0.10 if top >= 0.45 else 0.14)
         if image_std < 0.06:
-            blend_ratio = max(blend_ratio, 0.35)
-        if top < 0.32 and margin < 0.06:
-            blend_ratio = max(blend_ratio, 0.18)
+            blend_ratio = max(blend_ratio, 0.22)
+        if top < 0.30 and margin < 0.05:
+            blend_ratio = max(blend_ratio, 0.14)
 
         blended = {
             emotion: probabilities[emotion] * (1.0 - blend_ratio)
@@ -226,20 +278,152 @@ class ImageEmotionModel:
         return {e: round(probabilities[e], 4) for e in EMOTION_ORDER}
 
 
+class LocalCnnImageEmotionModel:
+    """Offline FER-2013 CNN backend trained by app.ml.train_image_model."""
+
+    def __init__(self) -> None:
+        import torch
+
+        if not CNN_ARTIFACT_PATH.exists():
+            raise FileNotFoundError(f"Local CNN artifact not found: {CNN_ARTIFACT_PATH}")
+
+        self.torch = torch
+        self.device = _select_torch_device(torch)
+        self.model = _build_cnn_model()
+        state = torch.load(CNN_ARTIFACT_PATH, map_location="cpu")
+        self.model.load_state_dict(state)
+        self.model.eval()
+        self.model.to(self.device)
+        self.face_detector, self.cv2 = ImageEmotionModel._build_face_detector()
+        _logger.info("Loaded local CNN image model from %s on %s.", CNN_ARTIFACT_PATH, self.device)
+
+    def _extract_face(self, image) -> Tuple[object, bool]:
+        import numpy as np
+
+        if self.face_detector is None or self.cv2 is None:
+            return ImageEmotionModel._center_crop(image), False
+
+        gray = np.asarray(image.convert("L"))
+        min_side = min(gray.shape[0], gray.shape[1])
+        min_size = max(30, min_side // 9)
+        for neighbors in (4, 3, 2):
+            faces = self.face_detector.detectMultiScale(
+                gray,
+                scaleFactor=1.08,
+                minNeighbors=neighbors,
+                minSize=(min_size, min_size),
+            )
+            if len(faces) > 0:
+                break
+
+        if len(faces) == 0:
+            return ImageEmotionModel._center_crop(image), False
+
+        x, y, width, height = max(faces, key=lambda item: int(item[2]) * int(item[3]))
+        pad = int(max(width, height) * 0.20)
+        left = max(0, x - pad)
+        top = max(0, y - pad)
+        right = min(image.width, x + width + pad)
+        bottom = min(image.height, y + height + pad)
+        return image.crop((left, top, right, bottom)), True
+
+    def _preprocess(self, image):
+        import numpy as np
+
+        face = image.convert("L").resize((CNN_INPUT_W, CNN_INPUT_H))
+        arr = np.asarray(face, dtype="float32") / 255.0
+        arr = (arr - 0.5) / 0.5
+        return self.torch.from_numpy(arr).unsqueeze(0)
+
+    def _predict_probabilities(self, image_data_url: str) -> Optional[Dict[Emotion, float]]:
+        import numpy as np
+        from PIL import Image
+
+        payload = image_data_url.split(",", 1)[1] if "," in image_data_url else image_data_url
+
+        try:
+            image_bytes = base64.b64decode(payload, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+
+        try:
+            image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        except OSError:
+            return None
+
+        face, has_face = self._extract_face(image)
+        face_array = np.asarray(face, dtype="uint8")
+        image_std = float(np.std(face_array.astype("float32") / 255.0))
+        batch = self.torch.stack([
+            self._preprocess(face),
+            self._preprocess(face.transpose(Image.FLIP_LEFT_RIGHT)),
+        ]).to(self.device)
+
+        with self.torch.no_grad():
+            logits = self.model(batch).mean(dim=0)
+            probabilities = self.torch.softmax(logits, dim=0).detach().cpu().numpy()
+
+        app_probabilities: Dict[Emotion, float] = {e: 0.0 for e in EMOTION_ORDER}
+        for raw_index, probability in enumerate(probabilities):
+            raw_label = CNN_RAW_CLASSES[raw_index]
+            app_probabilities[CNN_LABEL_TO_APP[raw_label]] += float(probability)
+
+        total = sum(app_probabilities.values())
+        if total <= 0:
+            return None
+
+        normalized = {e: app_probabilities[e] / total for e in EMOTION_ORDER}
+        return ImageEmotionModel._calibrate_probabilities(
+            normalized,
+            has_face=has_face,
+            image_std=image_std,
+        )
+
+    def predict(self, image_data_url: str) -> Optional[Emotion]:
+        probabilities = self._predict_probabilities(image_data_url)
+        if not probabilities:
+            return None
+        return max(probabilities, key=probabilities.get)
+
+    def predict_weights(self, image_data_url: str) -> Dict[Emotion, float]:
+        probabilities = self._predict_probabilities(image_data_url)
+        if not probabilities:
+            return {emotion: 0.0 for emotion in EMOTION_ORDER}
+        return {e: round(probabilities[e], 4) for e in EMOTION_ORDER}
+
+
 @lru_cache(maxsize=1)
-def get_image_model() -> Optional[ImageEmotionModel]:
+def get_image_model():
     if skip_image_emotion_model():
         _logger.info(
-            "SKIP_IMAGE_EMOTION_MODEL / LIGHTWEIGHT_ML set — skipping ViT image model.",
+            "SKIP_IMAGE_EMOTION_MODEL / LIGHTWEIGHT_ML set — skipping image model.",
         )
         return None
+
+    backend = os.getenv("IMAGE_EMOTION_BACKEND", "cnn").strip().lower()
+    if backend in {"cnn", "local", "local_cnn"}:
+        return _load_local_cnn_model()
+    if backend not in {"hf", "vit", "huggingface"}:
+        _logger.warning("Unknown IMAGE_EMOTION_BACKEND=%s; using local CNN.", backend)
+        return _load_local_cnn_model()
 
     try:
         return ImageEmotionModel()
     except Exception as error:
         _logger.warning(
             "Could not load HuggingFace image model (%s). "
-            "Image emotion detection will be disabled.",
+            "Falling back to local CNN.",
+            error,
+        )
+        return _load_local_cnn_model()
+
+
+def _load_local_cnn_model():
+    try:
+        return LocalCnnImageEmotionModel()
+    except Exception as error:
+        _logger.warning(
+            "Could not load local CNN image model (%s). Image emotion detection will be disabled.",
             error,
         )
         return None

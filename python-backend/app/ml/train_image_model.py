@@ -22,7 +22,9 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+from app.ml.emotion_cnn import FER_RAW_CLASSES, FER_TO_APP, EmotionCNN
 
 _logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -30,16 +32,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 ARTIFACT_PATH = Path(__file__).resolve().parent / "artifacts" / "emotion_cnn.pth"
 CSV_FILENAME = "fer2013.csv"
 
-# FER-2013 class labels match the RAW_CLASSES list in image_model.py.
-FER_CLASSES = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
+FER_CLASSES = FER_RAW_CLASSES
+APP_EMOTIONS = ["happy", "sad", "angry", "neutral"]
 
-INPUT_H = 128
-INPUT_W = 144
-BATCH_SIZE = 64
-EPOCHS = 45
-LR = 5e-4
-PATIENCE = 8      # early-stopping patience (epochs without val improvement)
+INPUT_H = 48
+INPUT_W = 48
+BATCH_SIZE = 128
+EPOCHS = 40
+LR = 4e-4
+PATIENCE = 8
 WEIGHT_DECAY = 1e-4
+LABEL_SMOOTHING = 0.05
+
+
+def _fer_label_to_app(label_index: int) -> str:
+    return FER_TO_APP[FER_CLASSES[label_index]]
 
 
 # ── Utilities ──────────────────────────────────────────────────────────────
@@ -57,9 +64,21 @@ def _load_from_csv(csv_path: Path) -> Tuple[List, List, List, List]:
             if usage == "Training":
                 train_px.append(pixels)
                 train_lb.append(label)
-            else:
+            elif usage == "PublicTest":
                 val_px.append(pixels)
                 val_lb.append(label)
+
+    if not val_lb:
+        _logger.warning("No PublicTest rows found — using all non-Training rows for validation.")
+        with open(csv_path, newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                label = int(row["emotion"])
+                pixels = list(map(int, row["pixels"].split()))
+                usage = row.get("Usage", "Training")
+                if usage != "Training":
+                    val_px.append(pixels)
+                    val_lb.append(label)
 
     _logger.info(
         "FER-2013 loaded from CSV: %d train / %d val samples.", len(train_lb), len(val_lb)
@@ -68,11 +87,7 @@ def _load_from_csv(csv_path: Path) -> Tuple[List, List, List, List]:
 
 
 def _load_from_huggingface() -> Tuple[List, List, List, List]:
-    """Download FER-2013 from Hugging Face hub (no auth required).
-
-    Tries multiple known mirrors so the script works even if the default one
-    moves or is deprecated.
-    """
+    """Download FER-2013 from Hugging Face hub (no auth required)."""
     try:
         from datasets import load_dataset
     except ImportError:
@@ -82,12 +97,10 @@ def _load_from_huggingface() -> Tuple[List, List, List, List]:
         )
         sys.exit(1)
 
-    # Each entry: (repo_id, kwargs).  The first that loads wins.
-    # We start with auto-converted parquet branches (no scripts → modern API safe).
     candidates = [
-        ("Jeneral/fer2013", {"revision": "refs/convert/parquet"}),
         ("AutumnQiu/fer2013", {}),
         ("abhilash88/fer2013-enhanced", {}),
+        ("Jeneral/fer2013", {"revision": "refs/convert/parquet"}),
     ]
 
     ds = None
@@ -108,13 +121,8 @@ def _load_from_huggingface() -> Tuple[List, List, List, List]:
             f"No HuggingFace mirror could be loaded. Last error: {last_error}"
         )
 
-    # Detect column names from the first row.
     sample = ds[list(ds.keys())[0]][0]
     _logger.info("Sample row keys: %s", list(sample.keys()))
-    _logger.info(
-        "Sample row types: %s",
-        {k: type(v).__name__ for k, v in sample.items()},
-    )
 
     pixel_keys = ("pixels", "Pixels", "img_pixels")
     image_keys = ("image", "img", "img_bytes", "image_bytes", "image_raw")
@@ -129,15 +137,10 @@ def _load_from_huggingface() -> Tuple[List, List, List, List]:
     detected_pixel_key = _detect_key(sample, pixel_keys)
     detected_image_key = _detect_key(sample, image_keys)
     detected_label_key = _detect_key(sample, label_keys)
-    _logger.info(
-        "Detected: pixel=%s  image=%s  label=%s",
-        detected_pixel_key, detected_image_key, detected_label_key,
-    )
 
     if not detected_label_key or (not detected_pixel_key and not detected_image_key):
         raise RuntimeError(
-            f"Cannot detect FER-2013 columns in {list(sample.keys())}. "
-            "Open the dataset on HuggingFace and update pixel_keys/label_keys."
+            f"Cannot detect FER-2013 columns in {list(sample.keys())}."
         )
 
     from PIL import Image as _PILImage
@@ -170,7 +173,7 @@ def _load_from_huggingface() -> Tuple[List, List, List, List]:
                     from io import BytesIO
                     img = _PILImage.open(BytesIO(image_field["bytes"]))
                 else:
-                    img = _PILImage.open(image_field)  # path-like
+                    img = _PILImage.open(image_field)
                 img = img.convert("L").resize((48, 48))
                 return list(img.getdata()), int(label)
             except Exception:
@@ -198,8 +201,16 @@ def _load_from_huggingface() -> Tuple[List, List, List, List]:
     train_split_name = "train" if "train" in available_splits else available_splits[0]
     train_px, train_lb = _split_to_lists(ds[train_split_name])
 
+    label_counts = {}
+    for label in train_lb:
+        label_counts[label] = label_counts.get(label, 0) + 1
+    if len(label_counts) < 4:
+        raise RuntimeError(
+            f"Dataset {repo} has suspicious labels (only {len(label_counts)} classes): {label_counts}"
+        )
+
     val_split_name = None
-    for candidate in ("test", "validation", "valid"):
+    for candidate in ("valid", "validation", "test"):
         if candidate in available_splits:
             val_split_name = candidate
             break
@@ -207,10 +218,15 @@ def _load_from_huggingface() -> Tuple[List, List, List, List]:
     if val_split_name:
         val_px, val_lb = _split_to_lists(ds[val_split_name])
     else:
-        # 90/10 hand-split
-        cut = int(len(train_px) * 0.9)
-        val_px, val_lb = train_px[cut:], train_lb[cut:]
-        train_px, train_lb = train_px[:cut], train_lb[:cut]
+        from sklearn.model_selection import train_test_split
+
+        train_px, val_px, train_lb, val_lb = train_test_split(
+            train_px,
+            train_lb,
+            test_size=0.1,
+            stratify=train_lb,
+            random_state=42,
+        )
 
     _logger.info(
         "FER-2013 loaded from HF: %d train / %d val samples.", len(train_lb), len(val_lb)
@@ -221,7 +237,7 @@ def _load_from_huggingface() -> Tuple[List, List, List, List]:
 def _load_from_kaggle() -> Tuple[List, List, List, List]:
     _logger.info("Trying Kaggle API …")
     try:
-        import kaggle  # noqa: F401 – triggers credential setup
+        import kaggle  # noqa: F401
         os.system("kaggle datasets download -d msambare/fer2013 --unzip -p .")
     except Exception as exc:
         _logger.error("Kaggle download failed: %s", exc)
@@ -234,7 +250,6 @@ def _load_from_kaggle() -> Tuple[List, List, List, List]:
 
 
 def _load_dataset() -> Tuple[List, List, List, List]:
-    """Top-level loader: try local CSV → HuggingFace → Kaggle."""
     csv_path = Path(CSV_FILENAME)
     if csv_path.exists():
         _logger.info("Found %s locally – using it.", CSV_FILENAME)
@@ -271,7 +286,6 @@ def _load_dataset() -> Tuple[List, List, List, List]:
 
 def _build_dataset(pixel_rows: List, labels: List, augment: bool):
     import numpy as np
-    import torch
     from torch.utils.data import Dataset
     from torchvision import transforms
 
@@ -282,14 +296,12 @@ def _build_dataset(pixel_rows: List, labels: List, augment: bool):
         transforms.Normalize(mean=[0.5], std=[0.5]),
     ])
 
-    # Milder augmentation than before — strong augmentation was making train_acc
-    # look much lower than val_acc and slowed convergence.
     aug_tf = transforms.Compose([
         transforms.ToPILImage(),
         transforms.Resize((INPUT_H, INPUT_W)),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(6),
-        transforms.ColorJitter(brightness=0.12, contrast=0.12),
+        transforms.RandomRotation(8),
+        transforms.ColorJitter(brightness=0.10, contrast=0.10),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5]),
     ])
@@ -313,32 +325,42 @@ def _build_dataset(pixel_rows: List, labels: List, augment: bool):
     return FERDataset(pixel_rows, labels, tf)
 
 
-# ── Model ──────────────────────────────────────────────────────────────────
+def _class_weights(train_labels: List[int], device, num_classes: int = 7):
+    import numpy as np
+    import torch
 
-def _build_model():
-    import torch.nn as nn
-    import torch.nn.functional as F
+    counts = np.bincount(train_labels, minlength=num_classes).astype(float)
+    counts = np.maximum(counts, 1.0)
+    total = counts.sum()
+    weights = total / (num_classes * counts)
+    return torch.tensor(weights, dtype=torch.float32).to(device)
 
-    class EmotionCNN(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.conv1 = nn.Conv2d(1, 16, 3)
-            self.conv2 = nn.Conv2d(16, 32, 3)
-            self.conv3 = nn.Conv2d(32, 64, 3)
-            self.pool = nn.MaxPool2d(2, 2)
-            self.dropout = nn.Dropout(0.4)
-            self.fc1 = nn.Linear(14336, 128)
-            self.fc2 = nn.Linear(128, 7)
 
-        def forward(self, x):
-            x = self.pool(F.relu(self.conv1(x)))
-            x = self.pool(F.relu(self.conv2(x)))
-            x = self.pool(F.relu(self.conv3(x)))
-            x = x.flatten(1)
-            x = self.dropout(F.relu(self.fc1(x)))
-            return self.fc2(x)
+def _evaluate_app_accuracy(model, data_loader, device):
+    """7-class model accuracy mapped to our 4 app emotions."""
+    import torch
 
-    return EmotionCNN()
+    model.eval()
+    correct = 0
+    total = 0
+    confusion: Dict[str, Dict[str, int]] = {
+        emotion: {pred: 0 for pred in APP_EMOTIONS} for emotion in APP_EMOTIONS
+    }
+
+    with torch.no_grad():
+        for xb, yb in data_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            logits = model(xb)
+            pred_indices = logits.argmax(1)
+            for true_index, pred_index in zip(yb.tolist(), pred_indices.tolist()):
+                true_app = _fer_label_to_app(true_index)
+                pred_app = _fer_label_to_app(pred_index)
+                confusion[true_app][pred_app] += 1
+                if true_app == pred_app:
+                    correct += 1
+                total += 1
+
+    return correct / max(total, 1), confusion
 
 
 # ── Training loop ──────────────────────────────────────────────────────────
@@ -359,43 +381,35 @@ def _train() -> None:
 
     train_ds = _build_dataset(train_px, train_lb, augment=True)
     val_ds = _build_dataset(val_px, val_lb, augment=False)
-    # num_workers=0 → run in the main process. This avoids pickling issues
-    # with locally-defined dataset classes and works fine for FER-2013 size.
+
     train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
     val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-    model = _build_model().to(device)
+    model = EmotionCNN(num_classes=7).to(device)
 
-    # Warm-start is intentionally DISABLED: re-using old weights with a
-    # different RAW_CLASSES ordering would carry over the previous label
-    # confusion.  Set WARM_START=1 in the env to force a warm start.
     if os.environ.get("WARM_START") == "1" and ARTIFACT_PATH.exists():
         try:
             state = torch.load(ARTIFACT_PATH, map_location="cpu")
-            model.load_state_dict(state)
-            _logger.info("Loaded existing weights from %s (warm start).", ARTIFACT_PATH)
+            model.load_state_dict(state, strict=False)
+            _logger.info("Partial warm start from %s (strict=False).", ARTIFACT_PATH)
         except Exception as exc:
             _logger.warning("Could not load existing weights (%s); training from scratch.", exc)
     else:
-        _logger.info("Training from scratch (warm-start disabled).")
+        _logger.info("Training from scratch.")
 
-    # Class-balanced weights to handle FER-2013 imbalance.
-    try:
-        import numpy as np
-        counts = np.bincount(train_lb, minlength=7).astype(float)
-        class_weights = torch.tensor(1.0 / (counts + 1), dtype=torch.float32).to(device)
-    except ImportError:
-        class_weights = None
-
-    criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
+    class_weights = _class_weights(train_lb, device)
+    criterion = torch.nn.CrossEntropyLoss(
+        weight=class_weights,
+        label_smoothing=LABEL_SMOOTHING,
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
-    best_val_acc = 0.0
+    best_app_acc = 0.0
+    best_raw_acc = 0.0
     patience_counter = 0
 
     for epoch in range(1, EPOCHS + 1):
-        # ── Train ──
         model.train()
         total_loss = 0.0
         correct = 0
@@ -406,13 +420,13 @@ def _train() -> None:
             logits = model(xb)
             loss = criterion(logits, yb)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             total_loss += loss.item() * len(yb)
             correct += (logits.argmax(1) == yb).sum().item()
             total += len(yb)
         train_acc = correct / total
 
-        # ── Validate ──
         model.eval()
         v_correct = 0
         v_total = 0
@@ -422,28 +436,37 @@ def _train() -> None:
                 logits = model(xb)
                 v_correct += (logits.argmax(1) == yb).sum().item()
                 v_total += len(yb)
-        val_acc = v_correct / v_total
+        val_acc = v_correct / max(v_total, 1)
+        app_acc, confusion = _evaluate_app_accuracy(model, val_dl, device)
 
         scheduler.step()
         _logger.info(
-            "Epoch %02d/%02d  train_acc=%.3f  val_acc=%.3f  lr=%.2e",
-            epoch, EPOCHS, train_acc, val_acc,
+            "Epoch %02d/%02d  train_acc=%.3f  val_acc=%.3f  app_acc=%.3f  lr=%.2e",
+            epoch, EPOCHS, train_acc, val_acc, app_acc,
             optimizer.param_groups[0]["lr"],
         )
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        improved = app_acc > best_app_acc or (app_acc == best_app_acc and val_acc > best_raw_acc)
+        if improved:
+            best_app_acc = app_acc
+            best_raw_acc = val_acc
             patience_counter = 0
             ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), ARTIFACT_PATH)
-            _logger.info("  ✓ New best (%.3f) — saved to %s", best_val_acc, ARTIFACT_PATH)
+            _logger.info(
+                "  ✓ New best app_acc=%.3f raw_acc=%.3f — saved to %s",
+                best_app_acc, best_raw_acc, ARTIFACT_PATH,
+            )
         else:
             patience_counter += 1
             if patience_counter >= PATIENCE:
-                _logger.info("Early stopping at epoch %d (no improvement for %d epochs).", epoch, PATIENCE)
+                _logger.info(
+                    "Early stopping at epoch %d (no improvement for %d epochs).",
+                    epoch, PATIENCE,
+                )
                 break
 
-    _logger.info("Training complete. Best val accuracy: %.3f", best_val_acc)
+    _logger.info("Training complete. Best app accuracy: %.3f (raw: %.3f)", best_app_acc, best_raw_acc)
     _logger.info("Model saved to: %s", ARTIFACT_PATH)
 
 

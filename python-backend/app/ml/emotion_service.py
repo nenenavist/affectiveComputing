@@ -41,19 +41,7 @@ def _normalize(weights: EmotionWeights) -> EmotionWeights:
 
 
 def _fuse_modalities(text_weights: EmotionWeights, image_weights: EmotionWeights) -> EmotionWeights:
-    """Fuse text and image signals with conflict awareness.
-
-    When both modalities point to the *same* dominant emotion they reinforce
-    each other (confidence-weighted blend + small boost).
-
-    When they *conflict* (camera happy, text sad) both dominant emotions
-    should appear roughly equally.  We achieve this by:
-    1. Peak-normalising each modality to the same reference level (0.72), so
-       a very-confident text signal no longer drowns out a slightly-weaker
-       but clear image signal.
-    2. Blending ~50/50 with only a small lean toward the more confident
-       modality (±8 pp max).
-    """
+    """Fuse text and image signals with conflict awareness."""
     text_dominant = max(text_weights, key=text_weights.get)
     image_dominant = max(image_weights, key=image_weights.get)
     text_conf = _signal_confidence(text_weights)
@@ -67,16 +55,38 @@ def _fuse_modalities(text_weights: EmotionWeights, image_weights: EmotionWeights
             e: text_weights[e] * text_share + image_weights[e] * image_share
             for e in EMOTIONS
         }
-        fused[text_dominant] = min(fused[text_dominant] + 0.06, 0.97)
-        if text_conf < 0.40 and image_conf < 0.40:
-            return _blend_with_prior(fused, prior_share=0.22)
+        fused[text_dominant] = min(fused[text_dominant] + 0.10, 0.97)
+        if text_conf < 0.38 and image_conf < 0.38:
+            return _blend_with_prior(fused, prior_share=0.18)
         return _normalize(fused)
 
-    # ── Conflict branch ─────────────────────────────────────────────────────
-    # Scale both distributions so each dominant emotion reaches TARGET_PEAK.
-    # This makes "мне грустно" (sad 88%) and a smiling face (happy 65%)
-    # contribute symmetric distributions, giving ~50/50 sad/happy.
-    TARGET_PEAK = 0.72
+    if text_dominant != "neutral" and image_dominant == "neutral":
+        # Explicit text ("мне грустно") beats a blank/neutral-looking face.
+        text_share = 0.78
+        if text_conf >= 0.58:
+            text_share = 0.86
+        elif image_conf > text_conf + 0.20:
+            text_share = 0.66
+        image_share = 1.0 - text_share
+        return _normalize({
+            e: text_weights[e] * text_share + image_weights[e] * image_share
+            for e in EMOTIONS
+        })
+
+    if text_dominant == "neutral" and image_dominant != "neutral":
+        image_share = 0.70
+        if image_conf >= 0.58:
+            image_share = 0.80
+        elif text_conf > image_conf + 0.20:
+            image_share = 0.55
+        text_share = 1.0 - image_share
+        return _normalize({
+            e: text_weights[e] * text_share + image_weights[e] * image_share
+            for e in EMOTIONS
+        })
+
+    # Conflict branch: scale both peaks to the same reference, then blend.
+    TARGET_PEAK = 0.74
     text_peak = max(text_weights[text_dominant], 1e-6)
     image_peak = max(image_weights[image_dominant], 1e-6)
 
@@ -84,7 +94,7 @@ def _fuse_modalities(text_weights: EmotionWeights, image_weights: EmotionWeights
     image_scaled = {e: image_weights[e] * (TARGET_PEAK / image_peak) for e in EMOTIONS}
 
     conf_ratio = text_conf / total_conf
-    text_share = 0.5 + (conf_ratio - 0.5) * 0.16   # range ≈ 0.42–0.58
+    text_share = 0.5 + (conf_ratio - 0.5) * 0.20   # range ≈ 0.40–0.60
     image_share = 1.0 - text_share
 
     fused = {
@@ -92,8 +102,8 @@ def _fuse_modalities(text_weights: EmotionWeights, image_weights: EmotionWeights
         for e in EMOTIONS
     }
 
-    if text_conf < 0.38 and image_conf < 0.38:
-        return _blend_with_prior(fused, prior_share=0.20)
+    if text_conf < 0.35 and image_conf < 0.35:
+        return _blend_with_prior(fused, prior_share=0.16)
 
     return _normalize(fused)
 
@@ -106,7 +116,7 @@ def _signal_confidence(weights: EmotionWeights) -> float:
     margin = peak - sorted_values[1]
     entropy = -sum(value * math.log(value + 1e-9) for value in values) / math.log(len(values))
     certainty = 1.0 - entropy
-    confidence = 0.18 + peak * 0.42 + margin * 0.3 + certainty * 0.1
+    confidence = 0.16 + peak * 0.48 + margin * 0.28 + certainty * 0.08
     return min(max(confidence, 0.05), 0.95)
 
 
@@ -121,8 +131,8 @@ def _blend_with_prior(weights: EmotionWeights, prior_share: float) -> EmotionWei
 
 def _stabilize_single_signal(weights: EmotionWeights) -> EmotionWeights:
     confidence = _signal_confidence(weights)
-    if confidence >= 0.45:
+    if confidence >= 0.42:
         return _normalize(weights)
 
-    prior_share = 0.16 + (0.45 - confidence) * 0.55
+    prior_share = 0.14 + (0.42 - confidence) * 0.50
     return _blend_with_prior(weights, prior_share=prior_share)

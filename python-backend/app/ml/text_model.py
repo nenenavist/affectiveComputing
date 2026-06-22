@@ -1,5 +1,6 @@
-import re
 import math
+import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -114,6 +115,9 @@ WEIGHTED_KEYWORDS: Dict[Emotion, Dict[str, float]] = {
         "usual": 0.9,
         "average": 0.9,
         "meh": 1.0,
+        "routine": 1.1,
+        "focused": 1.1,
+        "quiet": 0.8,
         "норм": 1.0,
         "обычно": 0.9,
         "нейтраль": 1.2,
@@ -121,6 +125,9 @@ WEIGHTED_KEYWORDS: Dict[Emotion, Dict[str, float]] = {
         "спокой": 1.1,
         "фокус": 1.0,
         "стабиль": 1.0,
+        "рутин": 1.5,
+        "сосредоточ": 1.1,
+        "рабоч": 0.8,
     },
 }
 
@@ -353,6 +360,9 @@ TRAINING_CORPUS: Sequence[Tuple[str, Emotion]] = (
     ("спокойствие и ровное состояние", "neutral"),
     ("всё идёт своим чередом", "neutral"),
     ("нет ни плохого ни хорошего", "neutral"),
+    ("ничего не чувствую просто рутина", "neutral"),
+    ("просто рутина без особого настроения", "neutral"),
+    ("сосредоточена на делах без сильных эмоций", "neutral"),
     ("день как день без лишних переживаний", "neutral"),
     ("занимаюсь делами и всё нормально", "neutral"),
     ("ровное настроение ничего не тревожит", "neutral"),
@@ -399,17 +409,45 @@ def get_transformer_classifier():
         return None
 
     try:
-        import joblib
-        from sentence_transformers import SentenceTransformer
-    except ImportError:
-        return None
+        allow_download = os.getenv("ALLOW_HF_DOWNLOAD", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        previous_offline = os.environ.get("HF_HUB_OFFLINE")
+        hf_constants = None
+        previous_hf_hub_offline = None
+        try:
+            from huggingface_hub import constants as hf_constants
 
-    try:
-        encoder_name = TRANSFORMER_ENCODER_PATH.read_text(encoding="utf-8").strip()
-        encoder = SentenceTransformer(encoder_name)
-        classifier = joblib.load(TRANSFORMER_CLF_PATH)
+            previous_hf_hub_offline = hf_constants.HF_HUB_OFFLINE
+        except Exception:
+            pass
+        if not allow_download:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            if hf_constants is not None:
+                hf_constants.HF_HUB_OFFLINE = True
+        try:
+            import joblib
+            from sentence_transformers import SentenceTransformer
+
+            encoder_name = TRANSFORMER_ENCODER_PATH.read_text(encoding="utf-8").strip()
+            encoder = SentenceTransformer(
+                encoder_name,
+                local_files_only=not allow_download,
+            )
+            classifier = joblib.load(TRANSFORMER_CLF_PATH)
+        finally:
+            if not allow_download:
+                if previous_offline is None:
+                    os.environ.pop("HF_HUB_OFFLINE", None)
+                else:
+                    os.environ["HF_HUB_OFFLINE"] = previous_offline
+                if hf_constants is not None and previous_hf_hub_offline is not None:
+                    hf_constants.HF_HUB_OFFLINE = previous_hf_hub_offline
         return encoder, classifier
-    except Exception:
+    except (Exception, ImportError):
         return None
 
 
@@ -669,21 +707,21 @@ def detect_text_emotion_weights(text: str) -> Dict[Emotion, float]:
         transformer_top = max(transformer_weights, key=transformer_weights.get)
         word_count = len(cleaned.split())
 
-        # Default split.
-        transformer_share = 0.55
-        keyword_share = 0.32
-        pipeline_share = 0.13 if pipeline_weights else 0.0
+        # Default split — transformer is primary when calibrated artifact exists.
+        transformer_share = 0.62
+        keyword_share = 0.28
+        pipeline_share = 0.10 if pipeline_weights else 0.0
 
         # Strong, unambiguous keyword hit ⇒ trust keyword more.
         if keyword_peak >= 0.55:
-            transformer_share = 0.32
-            keyword_share = 0.55
-            pipeline_share = 0.13 if pipeline_weights else 0.0
+            transformer_share = 0.38
+            keyword_share = 0.52
+            pipeline_share = 0.10 if pipeline_weights else 0.0
 
-        # Short text (≤ 4 words) → transformer is less reliable for Russian.
+        # Short text (≤ 4 words) → keywords/heuristics are more reliable for RU.
         if word_count <= 4:
-            transformer_share = min(transformer_share, 0.40)
-            keyword_share = max(keyword_share, 0.48)
+            transformer_share = min(transformer_share, 0.45)
+            keyword_share = max(keyword_share, 0.45)
 
         # Disagreement: keyword and transformer point to different emotions.
         # Reduce transformer dominance unless its confidence is very high.
