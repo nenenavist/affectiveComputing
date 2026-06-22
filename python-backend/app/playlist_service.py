@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from app.itunes_service import search_tracks_for_mood as itunes_search_tracks_for_mood
-from app.ml import detect_emotion, detect_emotion_weights
+from app.ml import detect_emotion_weights
 from app.music.track_provider import (
     fetch_mood_tracks as lastfm_fetch_mood_tracks,
     is_available as lastfm_is_available,
@@ -85,8 +85,10 @@ PLAYLIST_NAMES: Dict[Emotion, List[str]] = {
 
 
 def build_playlist(request: MoodRequest) -> Playlist:
+    # Compute weights ONCE (ML inference is expensive) and derive the dominant
+    # emotion from them, instead of running the models twice.
     emotion_weights = detect_emotion_weights(request)
-    dominant_emotion = detect_emotion(request)
+    dominant_emotion = max(emotion_weights, key=emotion_weights.get)
     audio_targets = _weighted_audio_targets(emotion_weights)
     seed_genres = _pick_seed_genres(emotion_weights)
 
@@ -190,6 +192,7 @@ def build_playlist(request: MoodRequest) -> Playlist:
             _logger.warning("Audio-features fetch failed: %s", error)
 
     ranked_tracks = _rank_tracks(raw_tracks, emotion_weights, seed_genres, audio_targets, audio_features)
+    ranked_tracks = _diversify_playlist_order(ranked_tracks)
     tracks = [
         Track(
             id=track["id"],
@@ -286,6 +289,10 @@ def _rank_tracks(
             predicted_emotion = dominant_emotion
             confidence = 0.6 + random.uniform(-0.04, 0.06)
 
+        # Reward tracks whose (feature/tag-derived) mood matches the user's
+        # weighted mood. This is musical alignment, NOT title parsing.
+        base_score += emotion_weights.get(predicted_emotion, 0.0) * 0.20
+
         enriched = {
             **track,
             "musicEmotion": predicted_emotion,
@@ -322,6 +329,88 @@ def _rank_tracks(
             break
 
     return selected
+
+
+def _diversify_playlist_order(tracks: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Reorder a ranked list for variety without losing mood relevance.
+
+    1. Shuffle within small score buckets so the list is not identical every
+       request, while keeping high-ranked tracks near the top.
+    2. Greedily interleave so we avoid consecutive tracks with the same artist
+       or near-identical titles, and alternate source/tag when alternatives
+       exist.
+    """
+    if len(tracks) <= 2:
+        return list(tracks)
+
+    bucket_size = 5
+    pool: List[Dict[str, str]] = []
+    for start in range(0, len(tracks), bucket_size):
+        bucket = tracks[start:start + bucket_size]
+        random.shuffle(bucket)
+        pool.extend(bucket)
+
+    ordered: List[Dict[str, str]] = []
+    remaining = list(pool)
+    while remaining:
+        if not ordered:
+            ordered.append(remaining.pop(0))
+            continue
+
+        prev = ordered[-1]
+        best_index = 0
+        best_penalty = None
+        for index, candidate in enumerate(remaining):
+            penalty = _consecutive_penalty(prev, candidate)
+            # Earlier (higher-ranked) candidates win ties via a tiny position cost.
+            penalty += index * 0.001
+            if best_penalty is None or penalty < best_penalty:
+                best_penalty = penalty
+                best_index = index
+                if penalty <= 0.001:
+                    break
+        ordered.append(remaining.pop(best_index))
+
+    return ordered
+
+
+def _consecutive_penalty(prev: Dict[str, str], candidate: Dict[str, str]) -> float:
+    """Penalty for placing `candidate` right after `prev` (higher = worse)."""
+    penalty = 0.0
+
+    prev_artist = (prev.get("artist") or "").strip().lower()
+    cand_artist = (candidate.get("artist") or "").strip().lower()
+    if prev_artist and cand_artist and prev_artist == cand_artist:
+        penalty += 1.0
+
+    if _titles_are_similar(prev.get("title", ""), candidate.get("title", "")):
+        penalty += 1.0
+
+    if prev.get("source") and prev.get("source") == candidate.get("source"):
+        penalty += 0.15
+
+    prev_tag = (prev.get("tag") or "").strip().lower()
+    cand_tag = (candidate.get("tag") or "").strip().lower()
+    if prev_tag and cand_tag and prev_tag == cand_tag:
+        penalty += 0.1
+
+    return penalty
+
+
+def _titles_are_similar(title_a: str, title_b: str) -> bool:
+    a = title_a.strip().lower()
+    b = title_b.strip().lower()
+    if not a or not b:
+        return False
+    if a == b or a in b or b in a:
+        return True
+    tokens_a = _normalize_title_tokens(a)
+    tokens_b = _normalize_title_tokens(b)
+    if not tokens_a or not tokens_b:
+        return False
+    overlap = len(tokens_a & tokens_b)
+    union = len(tokens_a | tokens_b) or 1
+    return overlap / union >= 0.6
 
 
 def _audio_similarity(features: Dict[str, float], targets: Dict[str, float]) -> float:

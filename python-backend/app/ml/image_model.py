@@ -60,6 +60,48 @@ def _truthy_env(name: str) -> bool:
     return bool(raw and raw.strip().lower() in {"1", "true", "yes", "on"})
 
 
+def _decode_image(image_data_url: str):
+    """Decode a base64 data URL (or bare base64) into an RGB PIL image.
+
+    Returns None on malformed input so callers can degrade gracefully.
+    """
+    from PIL import Image
+
+    payload = image_data_url.split(",", 1)[1] if "," in image_data_url else image_data_url
+    try:
+        image_bytes = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    try:
+        return Image.open(BytesIO(image_bytes)).convert("RGB")
+    except OSError:
+        return None
+
+
+def _enhance_face(image):
+    """Normalize lighting/contrast so webcam frames look closer to training data.
+
+    Autocontrast stretches the histogram (robust to dim/overexposed selfies);
+    a small cutoff ignores extreme pixels. Falls back to the input on error.
+    """
+    try:
+        from PIL import ImageOps
+
+        return ImageOps.autocontrast(image, cutoff=2)
+    except Exception:
+        return image
+
+
+def _log_image_prediction(backend: str, has_face: bool, weights: Dict[Emotion, float]) -> None:
+    ordered = sorted(weights.items(), key=lambda item: item[1], reverse=True)
+    top_emotion, top_value = ordered[0]
+    second_value = ordered[1][1] if len(ordered) > 1 else 0.0
+    _logger.info(
+        "Image[%s]: face=%s top=%s(%.2f) margin=%.2f weights=%s",
+        backend, has_face, top_emotion, top_value, top_value - second_value, weights,
+    )
+
+
 def _select_torch_device(torch):
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -180,19 +222,12 @@ class ImageEmotionModel:
         import numpy as np
         from PIL import Image
 
-        payload = image_data_url.split(",", 1)[1] if "," in image_data_url else image_data_url
-
-        try:
-            image_bytes = base64.b64decode(payload, validate=True)
-        except (binascii.Error, ValueError):
-            return None
-
-        try:
-            image = Image.open(BytesIO(image_bytes)).convert("RGB")
-        except OSError:
+        image = _decode_image(image_data_url)
+        if image is None:
             return None
 
         face, has_face = self._extract_face(image)
+        face = _enhance_face(face)
         face_array = np.asarray(face, dtype="uint8")
         image_std = float(np.std(face_array.astype("float32") / 255.0))
 
@@ -224,9 +259,11 @@ class ImageEmotionModel:
             return None
 
         normalized = {e: app_probabilities[e] / total for e in EMOTION_ORDER}
-        return self._calibrate_probabilities(
+        calibrated = self._calibrate_probabilities(
             normalized, has_face=has_face, image_std=image_std
         )
+        _log_image_prediction("hf", has_face, calibrated)
+        return calibrated
 
     @staticmethod
     def _calibrate_probabilities(
@@ -330,8 +367,9 @@ class LocalCnnImageEmotionModel:
     def _preprocess(self, image):
         import numpy as np
 
-        face = image.convert("L").resize((CNN_INPUT_W, CNN_INPUT_H))
-        arr = np.asarray(face, dtype="float32") / 255.0
+        # Grayscale + contrast normalize to match FER-2013 training conditions.
+        gray = _enhance_face(image.convert("L")).resize((CNN_INPUT_W, CNN_INPUT_H))
+        arr = np.asarray(gray, dtype="float32") / 255.0
         arr = (arr - 0.5) / 0.5
         return self.torch.from_numpy(arr).unsqueeze(0)
 
@@ -339,16 +377,8 @@ class LocalCnnImageEmotionModel:
         import numpy as np
         from PIL import Image
 
-        payload = image_data_url.split(",", 1)[1] if "," in image_data_url else image_data_url
-
-        try:
-            image_bytes = base64.b64decode(payload, validate=True)
-        except (binascii.Error, ValueError):
-            return None
-
-        try:
-            image = Image.open(BytesIO(image_bytes)).convert("RGB")
-        except OSError:
+        image = _decode_image(image_data_url)
+        if image is None:
             return None
 
         face, has_face = self._extract_face(image)
@@ -373,11 +403,13 @@ class LocalCnnImageEmotionModel:
             return None
 
         normalized = {e: app_probabilities[e] / total for e in EMOTION_ORDER}
-        return ImageEmotionModel._calibrate_probabilities(
+        calibrated = ImageEmotionModel._calibrate_probabilities(
             normalized,
             has_face=has_face,
             image_std=image_std,
         )
+        _log_image_prediction("cnn", has_face, calibrated)
+        return calibrated
 
     def predict(self, image_data_url: str) -> Optional[Emotion]:
         probabilities = self._predict_probabilities(image_data_url)
